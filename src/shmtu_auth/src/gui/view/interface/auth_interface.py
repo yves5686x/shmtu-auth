@@ -17,7 +17,11 @@ from qfluentwidgets import FluentIcon as FIF
 
 from shmtu_auth.src.datatype.shmtu.auth.auth_user import UserItem
 from shmtu_auth.src.gui.common.config import Config, cfg
-from shmtu_auth.src.gui.common.signal_bus import signal_bus
+from shmtu_auth.src.gui.common.credential_bridge import (
+    fetch_service_users,
+    merge_service_users,
+)
+from shmtu_auth.src.gui.common.signal_bus import log_new, signal_bus
 from shmtu_auth.src.gui.common.style_sheet import StyleSheet
 from shmtu_auth.src.gui.feature.network_auth import AuthThread
 from shmtu_auth.src.gui.view.components.fluent.widget_label import FBodyLabel
@@ -513,7 +517,16 @@ class AuthInterface(GalleryInterface):
                 try:
                     from shmtu_auth.src.datatype.shmtu.auth.auth_user import get_valid_user_list
 
-                    valid_users = get_valid_user_list(self.user_list)
+                    # 认证前先按物理网卡 MAC 问自建凭据服务，拿到就优先用；
+                    # 没配服务 / 请求失败 / 没这台设备的记录，都原样用界面里的账号。
+                    # 这段跑在后台线程里，网络请求不会卡住界面。
+                    service_users = fetch_service_users()
+                    if service_users:
+                        log_new("Auth", f"凭据服务提供 {len(service_users)} 个账号，将优先使用")
+
+                    merged_users = merge_service_users(self.user_list, service_users)
+                    valid_users = get_valid_user_list(merged_users)
+
                     self.validation_completed.emit(valid_users)
                 except Exception as e:
                     self.validation_error.emit(str(e))
@@ -560,8 +573,10 @@ class AuthInterface(GalleryInterface):
                 self.work_thread = None
 
             # 创建新线程
+            # 注意用 valid_users 而不是 self.user_list：前者可能已经并入了
+            # 自建凭据服务返回的账号，后者只是界面上手填的那份。
             self.work_thread = AuthThread(
-                user_list=self.user_list,
+                user_list=valid_users,
                 check_internet_interval=cfg.check_internet_interval.value,
                 check_internet_retry_times=cfg.check_internet_retry_times.value,
                 check_internet_retry_wait_time=cfg.check_internet_retry_wait_time.value,
