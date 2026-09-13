@@ -57,6 +57,59 @@ DEFAULT_PORTAL_SERVICES: tuple[tuple[str, str], ...] = (
 # SHMTU_AUTH_CAPTCHA_MAX_RETRY 覆盖。
 DEFAULT_CAPTCHA_MAX_RETRY = 6
 
+# 门户域名特征。
+#
+# 2026-09 门户改版后统一到 ismu.shmtu.edu.cn:8443/eportal/，
+# 旧的 hwifi.shmtu.edu.cn（解析到内网 10.32.45.5）是另一套门户，仍然保留，
+# 因为部分无线网络环境还在用它。
+PORTAL_HOST_MARKERS = (
+    "ismu.shmtu.edu.cn",
+    "hwifi.shmtu.edu.cn",
+)
+
+# 门户路径特征（不依赖域名，门户再换域名也能认出来）
+PORTAL_PATH_MARKERS = (
+    "/eportal/",
+    "auth.html",
+    "portalpage",
+    "portalauth",
+)
+
+
+def looks_like_portal(final_url, original_url=""):
+    """判断最终 URL 是不是被网关劫持到了认证页。
+
+    三层判据，从强到弱：
+    1. 明确的门户域名（ismu / hwifi）
+    2. 明确的门户路径（/eportal/、auth.html、portalpage、portalauth）
+    3. 通用劫持特征：请求 A 却跳到了**完全不同的域名** B，且带了 queryString
+
+    第 3 条是兜底，用来覆盖「门户又换域名 / 换路径」的情况 ——
+    正常访问一个 http 明文地址不会跳到别的域名还带一串参数，
+    会这么干的只有 captive portal。
+    """
+    final_url = (final_url or "").strip()
+    if not final_url:
+        return False
+
+    host = (urlparse(final_url).hostname or "").lower()
+    lowered = final_url.lower()
+
+    if host and any(
+        host == marker or host.endswith("." + marker) for marker in PORTAL_HOST_MARKERS
+    ):
+        return True
+
+    if any(marker in lowered for marker in PORTAL_PATH_MARKERS):
+        return True
+
+    if original_url:
+        original_host = (urlparse(original_url).hostname or "").lower()
+        if original_host and host and host != original_host and "?" in final_url:
+            return True
+
+    return False
+
 
 class HeadlessNetAuth:
     def __init__(self) -> None:
@@ -72,6 +125,12 @@ class HeadlessNetAuth:
         # 不会改变"两个都试"的语义（见 _portal_service_candidates）。
         self._last_ok_service = ""
         self.session = requests.Session()  # 复用连接
+        # 校园网探测必须绕过系统代理。
+        #
+        # requests 默认 trust_env=True，会读 HTTP_PROXY / HTTPS_PROXY 等环境变量。
+        # 一旦宿主机或容器设了代理，探测请求会直接发给代理并拿到真实页面，
+        # 网关的劫持跳转根本不会发生，于是永远抓不到 queryString。
+        self.session.trust_env = False
         self.headers = {
             "Content-Type": "application/x-www-form-urlencoded; charset=UTF-8",
             "User-Agent": get_env_str(
@@ -102,15 +161,27 @@ class HeadlessNetAuth:
             return "", 0, ""
 
     def is_connected(self) -> bool:
+        # 特征串是必须的，用来识别「代理 / 网关返回的错误页」：那种响应状态码
+        # 可能是 200（甚至 502），但内容根本不是目标网站的页面。只凭状态码判断，
+        # 会把「上不了网」误判成「已联网」，进而认为无需认证、返回空 queryString。
         targets = [
-            ("http://www.baidu.com", ("baidu.com",)),
-            ("https://www.bilibili.com/", ("bilibili.com",)),
+            ("http://www.baidu.com", ("baidu.com",), ("baidu", "百度")),
+            ("https://www.bilibili.com/", ("bilibili.com",), ("bilibili",)),
         ]
-        for url, expected_hosts in targets:
-            _, status_code, final_url = self._get_text_code(url)
-            if status_code <= 0:
+        for url, expected_hosts, body_markers in targets:
+            text, status_code, final_url = self._get_text_code(url)
+            LOGGER.debug("Connectivity probe %s -> status=%s final=%s", url, status_code, final_url)
+
+            # 只有 2xx 才算真的拿到了内容。4xx / 5xx 说明请求被中间设备挡了回来，
+            # 典型如代理返回的 407（需代理认证）、502（坏网关）。
+            if not 200 <= status_code < 300:
                 continue
             if not self._is_expected_host(final_url, expected_hosts):
+                continue
+            # 内容校验：挡住代理 / 网关 / DNS 劫持返回的伪页面
+            lowered = (text or "").lower()
+            if body_markers and not any(m.lower() in lowered for m in body_markers):
+                LOGGER.debug("Unexpected body from %s; treat as offline", url)
                 continue
             return True
         return False
@@ -158,33 +229,58 @@ class HeadlessNetAuth:
         Returns:
             格式: 'portal_url|query_string' 或者空字符串（已在线）
         """
+        # 手动指定的优先级最高，配了就完全跳过自动探测。
+        # 接受的两种写法：完整认证页 URL，或裸 queryString。
+        manual = (get_env_str("SHMTU_AUTH_QUERY_STRING", "") or "").strip()
+        if manual:
+            LOGGER.info("Using manually configured SHMTU_AUTH_QUERY_STRING, skip probing")
+            return manual
+
         if not skip_connectivity_check:
             if self.is_connected():
                 return ""
 
-        # 优先使用配置的探测URL，失败后再尝试备选
-        primary_url = self.probe_url
-        fallback_urls = [
+        # 优先使用配置的探测URL，失败后再尝试备选。
+        #
+        # 网关通常只劫持「未缓存的 http 明文请求」，不同网络放行的地址不一样，
+        # 单靠一个探测点很容易在换机器 / 换接入方式后抓不到跳转。
+        #   - neverssl.com 专门保证不会被升级成 https，最容易被劫持
+        #   - example.com / msftconnecttest.com 是各家系统自带的连通性探测地址
+        check_urls = [
+            self.probe_url,
             "http://www.msftconnecttest.com/connecttest.txt",
+            "http://neverssl.com",
+            "http://example.com",
             "http://www.shmtu.edu.cn",
         ]
 
-        final_url = ""
-        response_text = ""
+        hit = None   # (探测地址, 最终URL, 响应体)
+        last = None  # 最后一次有效响应，meta refresh 兜底用
 
-        # 先尝试主URL
-        response_text, _, final_url = self._get_text_code(primary_url)
-        if "hwifi.shmtu.edu.cn" not in final_url and "auth.html" not in final_url and "portalpage" not in final_url:
-            # 主URL没找到，尝试备选URL
-            for check_url in fallback_urls:
-                response_text, _, final_url = self._get_text_code(check_url)
-                if "hwifi.shmtu.edu.cn" in final_url or "auth.html" in final_url or "portalpage" in final_url:
-                    break
+        for check_url in check_urls:
+            response_text, _, final_url = self._get_text_code(check_url)
+            LOGGER.debug("Probe %s -> %s", check_url, final_url)
+            if not final_url:
+                continue
 
-        if not final_url:
+            last = (check_url, final_url, response_text)
+
+            # 命中就立刻停，否则后面探测地址返回的正常页面会把结果覆盖掉
+            if looks_like_portal(final_url, check_url):
+                hit = (check_url, final_url, response_text)
+                break
+
+        if hit is None:
+            if last is not None:
+                LOGGER.warning("No probe hit the portal page, fallback to meta refresh parsing")
+            hit = last
+
+        if hit is None:
             return ""
 
-        if "auth.html" in final_url or "portalpage" in final_url or "hwifi" in final_url:
+        _, final_url, response_text = hit
+
+        if looks_like_portal(final_url):
             query_string = self._extract_query_string_from_url(final_url)
             encoded = self._encode_query_string_for_form(query_string)
             return f"{final_url}|{encoded}"
@@ -219,7 +315,8 @@ class HeadlessNetAuth:
             portal_url, query_string = auth_result.split("|", 1)
             return portal_url.strip(), query_string.strip()
 
-        if "hwifi" in auth_result and "?" in auth_result:
+        # 不限定门户域名：ismu（新）/ hwifi（旧）以及任何未来换域名的门户都要能拆。
+        if auth_result.lower().startswith(("http://", "https://")) and "?" in auth_result:
             parsed = urlparse(auth_result)
             encoded_query = parsed.query.replace("&", "%26").replace("=", "%3D")
             return auth_result, encoded_query

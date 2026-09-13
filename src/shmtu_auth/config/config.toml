@@ -76,6 +76,24 @@ SHMTU_AUTH_NETWORK_CHECK_RETRY_TIME_INTERVAL = 30
 # 无头环境没有弹窗兜底，识别失败只能靠重试，所以默认给得比较宽松，不建议调小。
 #SHMTU_AUTH_CAPTCHA_MAX_RETRY = 6
 
+# ---- 手动指定 queryString（排查 / 特殊网络的终极兜底）----
+# 正常情况下程序会自动探测网关跳转来拿 queryString。但探测依赖「网关劫持 http
+# 明文请求」，在部分环境下不生效：机器设了代理、有多张网卡、网关策略特殊等。
+# 表现就是报 "Query String is Invalid"（这句是我们自己的报错，不是门户返回的）。
+#
+# 这时在本机浏览器里随便开一个 http 网址（不要开 https），等它自动跳到认证页后，
+# 把地址栏里那一整串 URL 粘到这里即可，程序会跳过自动探测直接用它。
+#
+# 两种写法都接受：
+#   1. 完整认证页 URL
+#      SHMTU_AUTH_QUERY_STRING = "https://ismu.shmtu.edu.cn:8443/eportal/index.jsp?wlanuserip=xxx&mac=xxx"
+#   2. 裸 queryString
+#      SHMTU_AUTH_QUERY_STRING = "wlanuserip=xxx&mac=xxx&t=wireless-v2"
+#
+# 注意 queryString 是网关现生成的、绑定本机当前 IP，**换机器 / 重连网络后会变**，
+# 只适合临时救急或固定环境，不要长期写死。
+#SHMTU_AUTH_QUERY_STRING = ""
+
 [Notify]
 # 企业微信机器人 WebHook（当前版本暂未使用）
 SHMTU_AUTH_WEBHOOK_WEWORK = ""

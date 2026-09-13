@@ -142,7 +142,8 @@ class ShmtuNetAuthCore:
             return portal_url.strip(), query_string.strip()
 
         # Fallback for full URL returned without "|" separator.
-        if "hwifi" in auth_result and "?" in auth_result:
+        # 不限定门户域名：ismu（新）/ hwifi（旧）以及任何未来换域名的门户都要能拆。
+        if auth_result.lower().startswith(("http://", "https://")) and "?" in auth_result:
             parsed = urlparse(auth_result)
             encoded_query = parsed.query.replace("&", "%26").replace("=", "%3D")
             return auth_result, encoded_query
