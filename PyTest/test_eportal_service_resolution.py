@@ -332,3 +332,65 @@ def test_docker_service_type_constants():
         assert auth_core.ServiceType.EDU == encode_service_param("校园网")
         # 占位前缀两处必须一致
         assert eportal_protocol.PLACEHOLDER_SERVICE_PREFIX == PLACEHOLDER_SERVICE_PREFIX
+
+
+# ------------------------------------------------ 与浏览器字节对齐（HAR 回归）
+#
+# 这组用例守护 2026-09-13 定位出的真 bug：queryString 有「编码形态」
+# （wlanuserip%3D...%26mac%3D...，门户表单要求）和「原始形态」
+# （wlanuserip=...&mac=...，location.search）两种。
+# - 登录 POST 里的 queryString 用编码形态（浏览器双编码，requests 编码一次）；
+# - 但 index.jsp 的 GET 和 userV2.getServices 的 search 用的是**原始形态**，
+#   服务端会从 index.jsp 的 URL 上解析 wlanuserip / mac 并绑定到会话。
+# 把编码形态拼到 index.jsp URL 上，服务端解析不到参数、会话没绑定，
+# 登录就会报「用户不存在或者密码错误」——即使账号密码都是对的。
+
+ENCODED_QS = (
+    "wlanuserip%3D9660ce92c1fd65a271f3ab972569faad"
+    "%26wlanacname%3D436da45d7eab307de7f4e23d9acef73c"
+    "%26mac%3D67d1ff70d8b083fe77eff0367912afaa%26t%3Dwireless-v2"
+)
+RAW_QS = (
+    "wlanuserip=9660ce92c1fd65a271f3ab972569faad"
+    "&wlanacname=436da45d7eab307de7f4e23d9acef73c"
+    "&mac=67d1ff70d8b083fe77eff0367912afaa&t=wireless-v2"
+)
+
+
+def test_index_url_uses_raw_query_string():
+    """index.jsp 必须用原始形态 queryString 打开（服务端从 URL 解析并绑定会话）。"""
+    session = FakeSession(FakeResponse(b"ok"))
+    client = EPortalClient(session)
+    client.open_entry(ENCODED_QS)
+
+    method, url = session.requests_sent[-1]
+    assert method == "GET"
+    assert url.endswith("index.jsp?" + RAW_QS)
+    # 编码形态绝不能再出现在 URL 上
+    assert "%3D" not in url and "%26" not in url
+
+
+def test_query_account_service_search_uses_raw_query_string():
+    """HAR：浏览器 search 值 = urlencode("?" + 原始queryString)。"""
+    session = FakeSession(FakeResponse("校园网".encode("utf-8")))
+    client = EPortalClient(session)
+    client.query_account_service(ENCODED_QS, "202540510004")
+
+    kwargs = session.kwargs_sent[-1]
+    # requests 拿到原始形态，编码一次后正好是浏览器发送的字节
+    assert kwargs["data"]["search"] == "?" + RAW_QS
+    assert kwargs["data"]["username"] == "202540510004"
+
+
+def test_docker_index_and_search_use_raw_query_string():
+    with docker_app() as (eportal_protocol, _, _, _):
+        session = FakeSession(FakeResponse(b"ok"))
+        client = eportal_protocol.EPortalClient(session)
+        client.open_entry(ENCODED_QS)
+        _, url = session.requests_sent[-1]
+        assert url.endswith("index.jsp?" + RAW_QS)
+
+        session2 = FakeSession(FakeResponse(b"iSMU"))
+        client2 = eportal_protocol.EPortalClient(session2)
+        client2.query_account_service(ENCODED_QS, "u")
+        assert session2.kwargs_sent[-1]["data"]["search"] == "?" + RAW_QS

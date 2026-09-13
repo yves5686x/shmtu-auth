@@ -434,7 +434,27 @@ class ShmtuNetAuthCore:
                 logger.exception(f"Password encryption failed: {e}")
                 return False, f"密码加密失败: {e}"
 
+        # 浏览器在登录前会先调 userV2.do?method=getServices（输入学号时触发，
+        # HAR 实测网口环境返回「校园网」），服务端随之把账号对应的服务绑定到会话。
+        # 补上这一步与浏览器时序对齐；返回值同时用来调整候选 service 的顺序。
+        # 拿不到也不影响 —— 两个候选仍会依次都试。
+        account_service = client.query_account_service(query_string, user)
         candidates = self._portal_service_candidates()
+        if account_service:
+            def _service_raw(value: str) -> str:
+                try:
+                    return unquote(value)
+                except Exception:  # noqa: BLE001
+                    return value
+
+            hit = next(
+                (item for item in candidates if _service_raw(item[1]) == account_service),
+                None,
+            )
+            if hit is not None:
+                candidates.remove(hit)
+                candidates.insert(0, hit)
+                logger.info(f"Account service '{account_service}' -> try {hit[0]} first")
         last_message = ""
 
         for index, (display_name, service) in enumerate(candidates):

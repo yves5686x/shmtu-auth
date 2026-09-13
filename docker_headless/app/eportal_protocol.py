@@ -30,7 +30,7 @@ import logging
 import re
 from dataclasses import dataclass, field
 from typing import Dict, List, Optional
-from urllib.parse import quote, urljoin, urlparse
+from urllib.parse import quote, unquote, urljoin, urlparse
 
 import requests
 
@@ -147,7 +147,14 @@ class EPortalClient:
         return headers
 
     def index_url(self, query_string: str) -> str:
-        return f"{self.base_url}index.jsp?{(query_string or '').lstrip('?')}"
+        # 浏览器打开认证页用的是 location.search 的**原始形态**
+        # （wlanuserip=...&mac=...，& 是真分隔符，见 HAR）。服务端会从这个 URL
+        # 上解析 wlanuserip / mac 等参数并绑定到会话；如果把「已编码」形态
+        # （%3D/%26）原样拼上去，服务端解析不到任何参数，会话没有绑定，
+        # 登录时密文里的 mac 与服务端期望对不上 → 「用户不存在或者密码错误」。
+        # 所以先 unquote 还原成原始形态（传入已是原始形态时 unquote 是无操作）。
+        qs = unquote((query_string or "").lstrip("?"))
+        return f"{self.base_url}index.jsp?{qs}"
 
     def _absolute(self, url: str) -> str:
         url = (url or "").strip()
@@ -343,7 +350,10 @@ class EPortalClient:
         try:
             res = self.session.post(
                 url,
-                data={"username": username, "search": "?" + (query_string or "").lstrip("?")},
+                # 浏览器 JS 提交的是 encodeURIComponent("?" + 原始queryString)，
+                # 即 search 值为「原始形态」，经 requests 编码一次后与浏览器字节一致。
+                # 传已编码形态会被 requests 再编码一层，服务端解出来就是错的。
+                data={"username": username, "search": "?" + unquote((query_string or "").lstrip("?"))},
                 headers=self._browser_headers(referer=self.index_url(query_string)),
                 verify=False,
                 timeout=(CONNECT_TIMEOUT, READ_TIMEOUT),

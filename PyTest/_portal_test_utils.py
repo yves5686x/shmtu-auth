@@ -44,6 +44,7 @@ class FakeSession:
         self._responses = dict(responses or {})
         self._default = default if default is not None else FakeResponse(b"{}")
         self.requests_sent = []
+        self.kwargs_sent = []
 
     def _pick(self, url: str) -> FakeResponse:
         for key, response in self._responses.items():
@@ -53,10 +54,12 @@ class FakeSession:
 
     def get(self, url, **kwargs):
         self.requests_sent.append(("GET", url))
+        self.kwargs_sent.append(kwargs)
         return self._pick(url)
 
     def post(self, url, **kwargs):
         self.requests_sent.append(("POST", url))
+        self.kwargs_sent.append(kwargs)
         return self._pick(url)
 
 
