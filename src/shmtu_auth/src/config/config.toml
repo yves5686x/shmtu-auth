@@ -8,6 +8,21 @@ SHMTU_AUTH_NETWORK_CHECK_RETRY_TIME_INTERVAL = 30
 [Auth]
 SHMTU_AUTH_TIME_INTERVAL = 10
 
+[Portal]
+# 门户登录用的 service 参数。
+#   不写这一项 = 自动探测：账号绑定服务 > 门户下发下拉项 > 兜底「校园网」
+#   有线网口一般用 "校园网"，无线 i-SHMU 一般用 "iSMU"，都不带百分号
+# 注意：TOML 配置优先级高于环境变量，这里一旦写了值环境变量就失效；
+#       只想临时改请用环境变量 SHMTU_AUTH_PORTAL_SERVICE，别在这里写。
+#SHMTU_AUTH_PORTAL_SERVICE = ""
+
+# 是否启用 OCR 自动识别验证码。关闭后直接弹窗请用户手输；
+# 无头/服务端环境没有弹窗，必须保持开启。
+#SHMTU_AUTH_CAPTCHA_OCR = true
+
+# 验证码自动重试次数（验证码是一次性的，失败后会重新取图再试）
+#SHMTU_AUTH_CAPTCHA_MAX_RETRY = 3
+
 [Notify]
 SHMTU_AUTH_WEBHOOK_WEWORK = ""
 SHMTU_WEBHOOK_SLEEP_TIME_START = "23:00"

@@ -10,6 +10,9 @@ gui_config.json
 # PyPi Token
 /.pypi_token
 
+# 抓包文件：登录 HAR 里含真实学号与加密后的密码，禁止入库
+*.har
+
 # UV 相关文件
 .venv/
 uv.lock

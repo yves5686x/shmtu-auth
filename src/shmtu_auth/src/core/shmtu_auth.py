@@ -9,13 +9,19 @@ class ShmtuNetAuth(ShmtuNetAuthCore):
     def __init__(self):
         super().__init__()
 
-    def login_by_list(self, user_list) -> bool:
+    def login_by_list(self, user_list, captcha_provider=None) -> bool:
         for user_3 in user_list:
             user_id = user_3[0]
             user_pwd = user_3[1]
             is_encrypt = user_3[2]
 
-            status = self.login(user_id, user_pwd, is_encrypt, skip_network_check=True)
+            status = self.login(
+                user_id,
+                user_pwd,
+                is_encrypt,
+                skip_network_check=True,
+                captcha_provider=captcha_provider,
+            )
 
             if status[0]:
                 return True

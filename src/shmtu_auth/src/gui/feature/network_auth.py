@@ -5,6 +5,7 @@ from typing import List
 from shmtu_auth.src.core.core_exp import check_is_connected
 from shmtu_auth.src.core.shmtu_auth import ShmtuNetAuth
 from shmtu_auth.src.datatype.shmtu.auth.auth_user import UserItem, get_valid_user_list
+from shmtu_auth.src.gui.common.captcha_bridge import get_captcha_bridge
 from shmtu_auth.src.gui.common.signal_bus import (
     auth_attempt,
     auth_failed,
@@ -49,6 +50,10 @@ class AuthThread(threading.Thread):
 
         self.shmtu_auth_obj = ShmtuNetAuth()
 
+        # 验证码兜底：OCR 识别不出来时弹窗请用户手输。
+        # 这一步在 GUI 线程执行（AuthThread 由界面创建），桥接对象因此亲和于 GUI 线程。
+        self.captcha_bridge = get_captcha_bridge()
+
     def check_is_connected_retry(self):
         # Fast probe only: no retry/wait before entering auth flow.
         return check_is_connected()
@@ -89,6 +94,7 @@ class AuthThread(threading.Thread):
                 user.password,
                 user.is_encrypted,
                 skip_network_check=True,
+                captcha_provider=self.captcha_bridge.ask,
             )
 
             if login_result[0]:  # 登录成功
