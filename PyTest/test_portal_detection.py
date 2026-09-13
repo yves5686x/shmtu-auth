@@ -283,3 +283,82 @@ class TestProbeBypassesProxy:
         with docker_app() as (_, auth_core, _, _):
             client = auth_core.HeadlessNetAuth()
         assert client.session.trust_env is False
+
+
+class TestPublicApiStillExists:
+    """防止重构时误删公开函数。
+
+    真实事故：把探测改成并发时，先删了 ``get_text_code`` 再加回来，
+    中间态下 GUI 的「手动测试网络连接」直接抛
+    ``NameError: name 'get_text_code' is not defined``。
+
+    这类错误特别阴险：``py_compile`` 全过（语法没问题）、单测全绿
+    （没覆盖到那条路径），只有真正跑起来才炸。所以在这里把公开 API
+    的存在性钉死 —— 谁再误删，测试立刻变红。
+    """
+
+    MAIN_REQUIRED = (
+        "get_text_code",
+        "probe_many",
+        "judge_connectivity",
+        "looks_like_portal",
+        "is_connect_by_sites",
+        "is_connect_by_google",
+        "get_query_string_by_url",
+        "get_query_string_by_baidu",
+        "ProbeResult",
+    )
+
+    # docker 副本里挂在 client 上的方法
+    DOCKER_REQUIRED = (
+        "_get_text_code",
+        "is_connected",
+        "_is_expected_host",
+        "get_auth_result",
+    )
+
+    # docker 副本里挂在模块上的函数（注意不是 client 的方法）
+    DOCKER_MODULE_REQUIRED = ("looks_like_portal",)
+
+    def test_main_module_keeps_public_api(self):
+        from shmtu_auth.src.core import get_query_string_requests as mod
+
+        missing = [name for name in self.MAIN_REQUIRED if not hasattr(mod, name)]
+        assert not missing, f"主包公开 API 被误删: {missing}"
+
+        for name in self.MAIN_REQUIRED:
+            if name == "ProbeResult":
+                continue
+            assert callable(getattr(mod, name)), f"{name} 不是可调用对象"
+
+    def test_docker_module_keeps_public_api(self):
+        with docker_app() as (_, auth_core, _, _):
+            client = auth_core.HeadlessNetAuth()
+            missing = [
+                name for name in self.DOCKER_REQUIRED if not hasattr(client, name)
+            ]
+            assert not missing, f"docker 副本方法被误删: {missing}"
+
+            missing_module = [
+                name
+                for name in self.DOCKER_MODULE_REQUIRED
+                if not hasattr(auth_core, name)
+            ]
+            assert not missing_module, (
+                f"docker 副本模块级函数被误删: {missing_module}"
+            )
+
+    def test_legacy_helper_is_actually_callable(self, monkeypatch):
+        """光 hasattr 不够 —— 还要真能调用，不抛 NameError。"""
+        from shmtu_auth.src.core import get_query_string_requests as mod
+
+        monkeypatch.setattr(
+            mod,
+            "probe_many",
+            lambda urls, *a, **k: [
+                mod.ProbeResult(url=u, text="", status=0, final_url="") for u in urls
+            ],
+        )
+
+        # 不通时返回 ("", 0, "")，重点是调用过程不能抛 NameError
+        assert mod.get_text_code("http://127.0.0.1:1") == ("", 0, "")
