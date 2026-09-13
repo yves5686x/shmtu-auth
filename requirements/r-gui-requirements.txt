@@ -5,3 +5,6 @@ darkdetect
 PySide6-Fluent-Widgets[full]
 
 scipy
+
+# 验证码 OCR。装了才能真正「无人值守」；没装时 GUI 会在识别不出来时弹窗让你手输。
+ddddocr

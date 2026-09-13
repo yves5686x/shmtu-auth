@@ -25,6 +25,9 @@ dependencies = [
   "PyYaml>=5.1.0",
   "toml>=0.10.0",
   "loguru>=0.5.0",
+  # 门户已强制要求图形验证码，无弹窗环境（CLI / Docker）必须靠它自动识别。
+  # 缺了不会崩，只是降级成人工手输；依赖 onnxruntime，安装体积增加约几十 MB。
+  "ddddocr",
 ]
 description = "上海海事大学校园网自动认证工具"
 dynamic = ["version"]
@@ -66,6 +69,7 @@ gui = [
   "PySideSix-Frameless-Window>=0.3.1",
   "darkdetect",
   "PySide6-Fluent-Widgets[full]",
+  "ddddocr",
 ]
 
 [dependency-groups]
@@ -87,6 +91,7 @@ gui = [
   "PySideSix-Frameless-Window>=0.3.1",
   "darkdetect",
   "PySide6-Fluent-Widgets[full]",
+  "ddddocr",
 ]
 lint = ["flake8", "ruff", "pylint"]
 test = ["pytest", "pytest-cov"]
