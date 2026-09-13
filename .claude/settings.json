@@ -1,0 +1,11 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(python -c ' *)",
+      "Bash(python -m py_compile src/shmtu_auth/src/core/core.py src/shmtu_auth/src/core/core_exp.py src/shmtu_auth/src/core/get_query_string_requests.py)",
+      "Bash(python -m py_compile docker_headless/app/auth_core.py docker_headless/app/main.py)",
+      "Bash(python -m py_compile src/shmtu_auth/src/core/core.py src/shmtu_auth/src/core/core_exp.py src/shmtu_auth/src/core/get_query_string_requests.py docker_headless/app/auth_core.py docker_headless/app/main.py)",
+      "Bash(git commit -m 'perf: optimize network detection and add docker_headless *)"
+    ]
+  }
+}

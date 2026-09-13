@@ -84,9 +84,11 @@ class MainWindow(FluentWindow):
     def __connect_tray_signals(self):
         """连接托盘相关信号"""
         # 连接认证状态信号到托盘更新
-        signal_bus.signal_auth_thread_started.connect(lambda: self.system_tray.update_auth_status(True))
-        signal_bus.signal_auth_thread_stopped.connect(lambda: self.system_tray.update_auth_status(False))
-        signal_bus.signal_auth_status_changed.connect(lambda is_online: self.system_tray.update_auth_status(None, is_online))
+        signal_bus.signal_auth_thread_started.connect(lambda: self.system_tray.update_auth_status(is_running=True))
+        signal_bus.signal_auth_thread_stopped.connect(lambda: self.system_tray.update_auth_status(is_running=False))
+        signal_bus.signal_auth_status_changed.connect(
+            lambda is_online: self.system_tray.update_auth_status(is_running=None, is_online=is_online)
+        )
         signal_bus.signal_auth_success.connect(
             lambda user_id: self.system_tray.show_notification("认证成功", f"用户 {user_id} 认证成功")
         )
@@ -134,10 +136,15 @@ class MainWindow(FluentWindow):
                     self.auth_interface.work_thread.join(timeout=3)
                     logger.info("认证线程已停止")
 
-            # 隐藏托盘图标
+            # 清理认证接口（包括网络测试管理器）
+            if hasattr(self, "auth_interface"):
+                self.auth_interface.cleanup()
+                logger.info("认证接口已清理")
+
+            # 清理系统托盘（包括网络检查线程）
             if hasattr(self, "system_tray"):
-                self.system_tray.tray_icon.hide()
-                logger.info("托盘图标已隐藏")
+                self.system_tray.cleanup()
+                logger.info("系统托盘已清理")
 
         except Exception as e:
             logger.error(f"清理资源时出错: {e}")
@@ -203,6 +210,7 @@ class MainWindow(FluentWindow):
         dpi_scale = cfg.get_dpi_ratio()
         logger.info(f"MainWindow DPI Scale: {dpi_scale}")
 
+        # 默认尺寸随DPI缩放
         default_width: int = int(800 * dpi_scale)
         default_height: int = int(600 * dpi_scale)
 
@@ -213,8 +221,12 @@ class MainWindow(FluentWindow):
             default_width = int(960 * dpi_scale)
             default_height = int(840 * dpi_scale)
 
-        min_width: int = int(800 * dpi_scale)
-        min_height: int = int(600 * dpi_scale)
+        # 最小尺寸使用固定的逻辑像素值，不随DPI缩放
+        # 这样可以确保窗口可以缩小到合理的尺寸
+        min_width: int = 640
+        min_height: int = 480
+
+        logger.info(f"Window size - Default: {default_width}x{default_height}, Minimum: {min_width}x{min_height}")
 
         self.setMinimumWidth(min_width)
         self.setMinimumHeight(min_height)

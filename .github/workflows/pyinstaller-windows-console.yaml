@@ -5,20 +5,36 @@ on:
     branches:
       - main
     tags:
-      - 'v*'
+      - "v*"
   workflow_dispatch:
 
 jobs:
   build:
     runs-on: windows-latest
+    # runs-on: windows-2022
 
     steps:
       - uses: actions/checkout@v4
 
+      - name: Initialize MSVC Dev Environment
+        uses: TheMrMilchmann/setup-msvc-dev@v3
+        with:
+          arch: x64
+
+      - name: List Downlevel Directories
+        run: |
+          # C:\Windows\System32\downlevel
+          ls C:\Windows\System32\downlevel
+          ls "C:\Program Files (x86)\Windows Kits\10\Redist\ucrt\DLLs\x64"
+
+          # Append to PATH
+          $env:PATH += ";C:\Windows\System32\downlevel;C:\Program Files (x86)\Windows Kits\10\Redist\ucrt\DLLs\x64"
+          echo $env:PATH
+          
       - name: Set up Python
         uses: actions/setup-python@v5
         with:
-          python-version: 3.12
+          python-version: 3.13
 
       - name: Check Version Setting
         run: |
@@ -44,18 +60,15 @@ jobs:
         run: . .\Build\windows_generate_exe_console.ps1
 
       - name: Make logs directory
-        run:
-          mkdir ".\Build\Output\Windows\shmtu_auth_windows_console\logs"
+        run: mkdir ".\Build\Output\Windows\shmtu_auth_windows_console\logs"
 
       - name: Copy Config File
-        run:
-          cp `
+        run: cp `
           ".\src\shmtu_auth\config\config.note.toml" `
           ".\Build\Output\Windows\shmtu_auth_windows_console\config.toml"
 
       - name: Compress Directory to ZIP
-        run:
-          Compress-Archive `
+        run: Compress-Archive `
           -Path ".\Build\Output\Windows\shmtu_auth_windows_console" `
           -DestinationPath ".\Build\Output\Windows\shmtu_auth_windows_console.zip"
 

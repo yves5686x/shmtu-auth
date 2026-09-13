@@ -77,6 +77,10 @@ class InstallManager:
         self.source_url = self._get_source_url(source_name)
         self.extra_index_params = f" -i {self.source_url}" if self.source_url else ""
 
+        # Get current Python executable path
+        self.python_path = sys.executable
+        print(f"Using Python executable: {self.python_path}")
+
         # Installation option control variables
         self.install_base_deps = False
         self.install_gui_deps = False
@@ -187,7 +191,18 @@ class InstallManager:
             print("Installing PySide6-Fluent-Widgets Lightweight Version...")
             command = f"pip install --upgrade PySide6-Fluent-Widgets{self.extra_index_params}"
 
-        return self.run_command(command)
+        result = self.run_command(command)
+        if result:
+            # Compile Qt resources after installing PySide6-Fluent-Widgets
+            script_path = os.path.join(os.path.dirname(__file__), "Assets", "Qt", "qt_compile_resource.py")
+            if os.path.exists(script_path):
+                print("Compiling Qt resource files...")
+                compile_cmd = f'"{sys.executable}" "{script_path}"'
+                if not self.run_command(compile_cmd):
+                    print("❌ Failed to compile Qt resource files!")
+            else:
+                print(f"Resource compile script not found: {script_path}")
+        return result
 
     def execute_install(self, mode_name: str = "") -> bool:
         """Execute the installation"""

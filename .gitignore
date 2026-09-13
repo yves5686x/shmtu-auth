@@ -2,8 +2,17 @@
 
 gui_config.json
 
+# Ignore Python Pickle Data Files
+# These files are often used for caching or storing serialized data.
+*.pickle
+*.pkl
+
 # PyPi Token
 /.pypi_token
+
+# UV 相关文件
+.venv/
+uv.lock
 
 # Byte-compiled / optimized / DLL files
 __pycache__/
@@ -266,4 +275,3 @@ Network Trash Folder
 Temporary Items
 .apdisk
 .idea
-
