@@ -17,6 +17,7 @@ from shmtu_auth.src.datatype.shmtu.auth.auth_user import (
     user_list_move_up,
     user_list_select_list_by_index,
 )
+from shmtu_auth.src.gui.common.docker_config_generator import generate_machine_configs
 from shmtu_auth.src.gui.view.components.custom.server_count_message_box import (
     ServerCountMessageBox,
 )
@@ -28,6 +29,7 @@ from shmtu_auth.src.gui.view.components.custom.user_list_table import (
 )
 from shmtu_auth.src.gui.view.components.fluent.widget_push_button import FPushButton
 from shmtu_auth.src.gui.view.interface.gallery_interface import GalleryInterface
+from shmtu_auth.src.gui.view.utils.gui_directory import navigate_to_file
 from shmtu_auth.src.utils.logs import get_logger
 
 logger = get_logger()
@@ -211,30 +213,54 @@ class UserListInterface(GalleryInterface):
     def __start_docker_generate(self):
         w = ServerCountMessageBox(self.window())
 
-        if w.exec():
-            save_path = w.path_line_edit.text()
+        if not w.exec():
+            return
 
-            # machine
+        save_path = w.path_line_edit.text()
+        machine_count = w.get_count()
+        users_per_machine = w.get_user_count_per_server()
 
-            machine_count = w.get_count()
+        result = self.__generate_docker_config(
+            save_path=save_path,
+            machine_count=machine_count,
+            users_per_machine=users_per_machine,
+        )
 
-            self.__generate_docker_config(save_path=save_path, machine_count=machine_count)
+        if not result.ok:
+            Dialog("生成失败", result.message, self.window()).exec()
+            return
 
-            w = Dialog("提示", "生成成功~\n您是否需要打开目录？", self.window())
-            w.setContentCopyable(True)
-            if w.exec():
-                pass
+        d = Dialog(
+            "生成成功",
+            f"{result.message}\n\n目录：{save_path}\n\n是否打开该目录？",
+            self.window(),
+        )
+        d.setContentCopyable(True)
+        if d.exec():
+            navigate_to_file(save_path)
 
-    def __generate_docker_config(self, save_path: str = "", machine_count: int = 1):
-        # Init machine list
-        user_for_each_machine: List[List[str]] = []
-        for _ in range(machine_count):
-            user_for_each_machine.append([])
+    def __generate_docker_config(
+        self,
+        save_path: str = "",
+        machine_count: int = 1,
+        users_per_machine: int = 3,
+    ):
+        """为若干台服务器生成 Docker 部署配置。
 
-        user_list_valid: List[UserItem] = []
+        账号从界面这份列表里取有效的，按顺序切分，每台 ``users_per_machine`` 个；
+        总数不够时后面的机器不生成（返回结果里会说明）。
+        """
+        valid_users = []
         for user_item in self.user_list:
             if user_item.is_valid():
-                user_list_valid.append(user_item)
+                valid_users.append((user_item.user_id.strip(), user_item.password.strip()))
+
+        return generate_machine_configs(
+            save_path=save_path,
+            users=valid_users,
+            machine_count=machine_count,
+            users_per_machine=users_per_machine,
+        )
 
     def __add_item(self, user_item: List[UserItem], insert_index: int = -1):
         if len(user_item) == 0:

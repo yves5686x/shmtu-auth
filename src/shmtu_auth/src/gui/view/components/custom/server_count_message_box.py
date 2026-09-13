@@ -1,4 +1,4 @@
-from PySide6.QtWidgets import QHBoxLayout, QLabel
+from PySide6.QtWidgets import QFileDialog, QHBoxLayout, QLabel
 from qfluentwidgets import LineEdit, MessageBoxBase, SpinBox, SubtitleLabel
 
 from shmtu_auth.src.gui.view.components.fluent.widget_push_button import FPushButton
@@ -71,8 +71,18 @@ class ServerCountMessageBox(MessageBoxBase):
     def get_count(self) -> int:
         return self.count_spin_box.value()
 
+    def get_user_count_per_server(self) -> int:
+        return self.user_count_per_server_spin_box.value()
+
     def __select_path(self):
-        self.path_line_edit.setText("")
+        current = self.path_line_edit.text().strip()
+        directory = QFileDialog.getExistingDirectory(
+            self,
+            "选择配置保存目录",
+            current,
+        )
+        if directory:
+            self.path_line_edit.setText(directory)
 
     def __validate_path(self, text_path: str):
         text_path = text_path.strip()
