@@ -95,8 +95,19 @@ def get_query_string_by_url(url: str = "http://1.1.1.1", skip_connectivity_check
 
     # 尝试列表 - 优先使用传入的URL，失败后再尝试备选
     check_urls = [url]
-    # 只有第一个失败才尝试备选URL
-    fallback_urls = ["http://www.msftconnecttest.com/connecttest.txt", "http://www.shmtu.edu.cn"]
+    # 只有第一个失败才尝试备选URL。
+    #
+    # 网关通常只劫持「未缓存的 http 明文请求」，而不同网络放行的地址不一样，
+    # 单靠一个探测点很容易在换机器 / 换接入方式（有线↔无线）后抓不到跳转。
+    # 所以这里多备几个对 captive portal 更敏感的地址：
+    #   - neverssl.com 专门保证不会被升级成 https，最容易被劫持
+    #   - example.com / msftconnecttest.com 是各家系统自带的连通性探测地址
+    fallback_urls = [
+        "http://www.msftconnecttest.com/connecttest.txt",
+        "http://neverssl.com",
+        "http://example.com",
+        "http://www.shmtu.edu.cn",
+    ]
     
     final_url = ""
     res_string = ""

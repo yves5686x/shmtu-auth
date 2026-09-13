@@ -344,7 +344,16 @@ class ShmtuNetAuthCore:
         """
         query_string = (query_string or "").strip()
         if len(query_string) == 0:
-            return False, "Query String is Invalid!"
+            # 空 queryString 说明这台机器根本没有被网关重定向到认证页，
+            # 跟账号密码无关。给出排查方向，否则用户只会去反复检查密码。
+            return False, (
+                "Query String is Invalid! —— 没抓到门户的 queryString\n"
+                "这通常不是账号密码问题，而是本机没能被网关重定向到认证页：\n"
+                "1. 先用浏览器随便打开一个 http 站点，看会不会自动跳到认证页；\n"
+                "   不跳的话说明当前网络不需要认证，或者不在校园网内。\n"
+                "2. 浏览器会跳、程序却抓不到，跑这个看探测细节：\n"
+                "   PYTHONPATH=src python diagnose_portal.py"
+            )
 
         client = EPortalClient(self.session, self.portal_base)
         client.open_entry(query_string)
