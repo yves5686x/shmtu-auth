@@ -144,5 +144,7 @@ if __name__ == "__main__":
 
     save_env_script(dict_date, sh_path="env.sh", pwsh_path="env.ps1", default_mode=False)
 
+    # 配置已收敛为单一模板 src/shmtu_auth/config/config.toml，只生成这一份。
+    # 注意：toml.dump 不保留注释，会把手写模板里的注释全部冲掉，
+    #      所以这个脚本只在「还没建 config.toml」时用，别在已有配置上跑。
     save_to_toml(dict_data=dict_date, toml_path="./config.toml")
-    save_to_toml(dict_data=dict_date, toml_path="../src/config/config.toml")
