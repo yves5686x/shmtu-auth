@@ -1,34 +1,84 @@
+# ==============================================================================
+# shmtu-auth 配置文件 —— 本地运行只需要改这一个文件
+#
+# 优先级：本文件 > 环境变量。也就是这里一旦写了值，同名环境变量就失效；
+#        想临时用环境变量覆盖，把对应行**注释掉**即可。
+#
+# 用 Docker 部署的话不用这个文件，改 docker_headless/.env（见那里的 .env.example）。
+# ==============================================================================
+
 [global]
+# 机器名称，用于日志标识和区分多台设备；留空则自动探测。
+# 注意：启用自建凭据服务后，服务端返回的 machine 会覆盖这里的值。
 SHMTU_MACHINE_NAME = ""
 
-[Network]
-SHMTU_AUTH_NETWORK_CHECK_RETRY_TIMES = 3
-SHMTU_AUTH_NETWORK_CHECK_RETRY_TIME_INTERVAL = 30
+[User]
+# ---- 本地账号（不使用自建凭据服务时填这里）----
+# 多个学号用分号分隔；每个学号对应一行密码。
+SHMTU_AUTH_USER_LIST = ""
+#SHMTU_AUTH_USER_PWD_202500000000 = "你的密码"
+# 若密码本身已是密文（一般不用），额外加一行标记，值非空即视为密文
+#SHMTU_AUTH_USER_PWD_ENCRYPT_202500000000 = "1"
+
+[Credential]
+# ---- 自建凭据服务（可选）----
+# 配好之后，程序会用**本机物理网卡 MAC** 当设备号去这个地址换账号密码：
+#   换到了 → 用服务端返回的账号，并自动带上门户接入类型（service）
+#   换不到 → 自动回退到上面 [User] 的本地配置
+# 留空 = 不使用这套机制。
+#
+# 接口约定：GET <地址>?mac=<12 位小写 MAC>
+#   地址里写 {mac} 占位符则直接替换，例如 https://host/device/{mac}/credential
+#   响应 200 + JSON：
+#     {
+#       "users": [{"id": "202500000000", "password": "xxx"}],
+#       "service": "校园网",        # 可选，定死后不再尝试另一种接入类型
+#       "machine": "实验室服务器",   # 可选，写进日志和通知
+#       "ttl": 3600                # 可选，本地缓存秒数
+#     }
+#   也认单账号的简化写法：{"user": "202500000000", "password": "xxx"}
+#
+# 安全提醒：密码是明文过网络的，务必用 HTTPS 并配上 token，不要暴露到公网。
+#SHMTU_AUTH_CREDENTIAL_URL = ""
+# 鉴权令牌，随请求头 X-Auth-Token 发送
+#SHMTU_AUTH_CREDENTIAL_TOKEN = ""
+# 本地缓存路径（内容是明文密码，已在 .gitignore 中排除）
+#SHMTU_AUTH_CREDENTIAL_CACHE = "./data/credentials.json"
+# 服务端用自签名证书时设为 true（会关闭 TLS 校验，尽量别用）
+#SHMTU_AUTH_CREDENTIAL_INSECURE = false
+# 手动指定设备号，跳过自动探测。
+#   注意这里要的是**物理网卡 MAC**（如 00:e0:1a:00:23:a9），
+#   不是门户 queryString 里那个加密过的 mac 串，两者完全不同。
+#   容器用 host 网络时能看到宿主网卡，通常不需要填这一项。
+#SHMTU_AUTH_DEVICE_MAC = ""
 
 [Auth]
+# 认证检测间隔（秒）
 SHMTU_AUTH_TIME_INTERVAL = 10
 
+[Network]
+# 网络检查重试次数
+SHMTU_AUTH_NETWORK_CHECK_RETRY_TIMES = 3
+# 网络检查重试间隔（秒）
+SHMTU_AUTH_NETWORK_CHECK_RETRY_TIME_INTERVAL = 30
+
 [Portal]
-# 门户登录用的 service 参数。
-#   不写这一项 = 自动探测：账号绑定服务 > 门户下发下拉项 > 兜底「校园网」
-#   有线网口一般用 "校园网"，无线 i-SHMU 一般用 "iSMU"，都不带百分号
-# 注意：TOML 配置优先级高于环境变量，这里一旦写了值环境变量就失效；
-#       只想临时改请用环境变量 SHMTU_AUTH_PORTAL_SERVICE，别在这里写。
+# ---- 门户接入类型 ----
+# 不写 = 依次尝试「校园网」（有线）和「iSMU」（无线），哪个能通就用哪个。
+#        刻意不按当前网络类型二选一，因为容器 / 网关代拨场景下这个判断经常不准。
+# 写了 = 只试这一个，不再兜底（方便排查问题）。
+# 注意：TOML 优先级高于环境变量，想让环境变量生效就别在这里写值。
 #SHMTU_AUTH_PORTAL_SERVICE = ""
-
-# 是否启用 OCR 自动识别验证码。关闭后直接弹窗请用户手输；
-# 无头/服务端环境没有弹窗，必须保持开启。
+# 是否启用 OCR 自动识别验证码。关闭后直接弹窗请用户输入；
+# 无头 / 服务端环境没有弹窗，必须保持开启。
 #SHMTU_AUTH_CAPTCHA_OCR = true
-
-# 验证码自动重试次数（验证码是一次性的，失败后会重新取图再试）
-#SHMTU_AUTH_CAPTCHA_MAX_RETRY = 3
-
-[User]
-SHMTU_AUTH_USER_LIST="{Number1};{Number2}"
-SHMTU_AUTH_USER_PWD_Number1 ="{Number1的密码}"
-SHMTU_AUTH_USER_PWD_Number2="{Number2的密码}"
+# 验证码自动重试次数（验证码是一次性的，失败后会换一张新图再试）。
+# 无头环境没有弹窗兜底，识别失败只能靠重试，所以默认给得比较宽松，不建议调小。
+#SHMTU_AUTH_CAPTCHA_MAX_RETRY = 6
 
 [Notify]
+# 企业微信机器人 WebHook（当前版本暂未使用）
 SHMTU_AUTH_WEBHOOK_WEWORK = ""
+# WebHook 免打扰时间段
 SHMTU_WEBHOOK_SLEEP_TIME_START = "23:00"
 SHMTU_WEBHOOK_SLEEP_TIME_END = "7:00"

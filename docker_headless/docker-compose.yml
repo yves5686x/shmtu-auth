@@ -8,25 +8,13 @@ services:
     image: shmtu-auth-headless:local
     container_name: shmtu-auth-headless
     restart: unless-stopped
+    # 必须用 host 网络，有两个原因：
+    #   1. 容器要看得到宿主机的物理网卡，设备号（物理 MAC）才取得对
+    #   2. 门户认证的设备标识才能和宿主自洽
     network_mode: host
-    environment:
-      # 用户配置（多个学号用分号分隔）
-      - SHMTU_AUTH_USER_LIST=your_student_id
-      - SHMTU_AUTH_USER_PWD_your_student_id=your_password
-      # 检测间隔（秒）
-      - SHMTU_AUTH_CHECK_INTERVAL=60
-      # 可选：强制指定门户 service（不填则依次尝试「校园网」和「iSMU」）
-      # 有线的值是 %E6%A0%A1%E5%9B%AD%E7%BD%91，无线是 iSMU；一般不用填
-      # - SHMTU_AUTH_PORTAL_SERVICE=
-      # 可选：验证码 OCR 开关（默认 true；关掉后无头环境无法登录）
-      # - SHMTU_AUTH_CAPTCHA_OCR=true
-      # 可选：验证码重试次数（默认 6）。容器里没有弹窗兜底，识别失败只能靠重试，
-      #       不建议调小
-      # - SHMTU_AUTH_CAPTCHA_MAX_RETRY=6
-      # 可选：自定义探测URL
-      # - SHMTU_AUTH_PROBE_URL=http://1.1.1.1
-      # 可选：自定义User-Agent
-      # - SHMTU_AUTH_USER_AGENT=Mozilla/5.0...
+    # 所有配置都写在同目录的 .env 里（从 .env.example 复制）
+    env_file:
+      - .env
     # 资源限制：onnxruntime + opencv 常驻内存约 200MB，128M 会 OOM
     deploy:
       resources:

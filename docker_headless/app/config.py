@@ -1,4 +1,11 @@
+import logging
 import os
+
+from app.credential_provider import resolve_credentials
+from app.device_id import detect_device_mac, format_mac
+
+# 自建凭据服务的本地缓存（内容是明文密码）
+DEFAULT_CREDENTIAL_CACHE = "./data/credentials.json"
 
 
 def get_env_str(name: str, default: str = "") -> str:
@@ -25,7 +32,64 @@ def get_env_bool(name: str, default: bool = False) -> bool:
     return value.lower() in {"1", "true", "yes", "on"}
 
 
+def resolve_device_mac() -> str:
+    """本机物理网卡 MAC（设备号）。
+
+    容器要用 host 网络才能看到宿主物理网卡；否则得显式配置
+    ``SHMTU_AUTH_DEVICE_MAC``。
+    """
+    identity = detect_device_mac(
+        override=get_env_str("SHMTU_AUTH_DEVICE_MAC", ""),
+        sysfs_dir=get_env_str("SHMTU_AUTH_SYSFS_NET_DIR", ""),
+    )
+    logging.info(
+        "Device identity: %s (source=%s, iface=%s)",
+        format_mac(identity.mac) or "(未取到)",
+        identity.source or "-",
+        identity.iface or "-",
+    )
+    if identity.warning:
+        logging.warning(identity.warning)
+    return identity.mac
+
+
+def parse_user_list_from_service() -> list[tuple[str, str]]:
+    """向自建凭据服务按设备号换账号密码；未配置地址时返回空列表。"""
+    url = get_env_str("SHMTU_AUTH_CREDENTIAL_URL", "")
+    if not url:
+        return []
+
+    bundle, note = resolve_credentials(
+        url=url,
+        mac=resolve_device_mac(),
+        token=get_env_str("SHMTU_AUTH_CREDENTIAL_TOKEN", ""),
+        cache_path=get_env_str("SHMTU_AUTH_CREDENTIAL_CACHE", DEFAULT_CREDENTIAL_CACHE),
+        verify=not get_env_bool("SHMTU_AUTH_CREDENTIAL_INSECURE", False),
+    )
+
+    if bundle is None:
+        logging.warning("Credential service unusable: %s", note)
+        return []
+
+    if note:
+        logging.warning(note)
+    logging.info("Loaded %s account(s) from credential %s", len(bundle.users), bundle.source)
+
+    if bundle.service:
+        os.environ["SHMTU_AUTH_PORTAL_SERVICE"] = bundle.service
+        logging.info("Credential service pinned portal service: %s", bundle.service)
+    if bundle.machine:
+        os.environ["SHMTU_MACHINE_NAME"] = bundle.machine
+
+    return [(item["id"], item["password"]) for item in bundle.users]
+
+
 def parse_user_list() -> list[tuple[str, str]]:
+    """取账号列表：先问自建凭据服务，拿不到再回退环境变量。"""
+    remote_users = parse_user_list_from_service()
+    if remote_users:
+        return remote_users
+
     raw_users = get_env_str("SHMTU_AUTH_USER_LIST", "")
     if not raw_users:
         return []

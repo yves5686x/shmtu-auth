@@ -46,21 +46,81 @@
 .\start.ps1 status   # 查看状态
 ```
 
-## 环境变量
+## 配置（只需要改一个文件）
 
-编辑 `docker-compose.yml` 配置：
-
-```yaml
-environment:
-  - SHMTU_AUTH_USER_LIST=your_student_id        # 学号（多个用;分隔）
-  - SHMTU_AUTH_USER_PWD_your_student_id=your_password  # 密码
-  - SHMTU_AUTH_CHECK_INTERVAL=60                # 检测间隔（秒）
+```bash
+cp .env.example .env    # 然后编辑 .env
 ```
+
+所有配置都写在 `docker_headless/.env` 里，`docker-compose.yml` 通过 `env_file` 读它。
+（早先是把变量直接写进 compose，现已迁出，避免同一份配置散在多处。）
+
+### 账号密码从哪来（二选一）
+
+**方式一：本地填写**（默认）
+
+```env
+SHMTU_AUTH_USER_LIST=202500000000                     # 多个学号用 ; 分隔
+SHMTU_AUTH_USER_PWD_202500000000=你的密码
+```
+
+**方式二：自建凭据服务**（多设备场景推荐）
+
+配好地址后，容器会拿**本机物理网卡 MAC** 当设备号去换账号密码；
+换到了就用服务端的，换不到自动回退到本地的 `SHMTU_AUTH_USER_LIST`。
+
+```env
+SHMTU_AUTH_CREDENTIAL_URL=https://your-server/device/{mac}/credential
+SHMTU_AUTH_CREDENTIAL_TOKEN=你的令牌
+```
+
+接口约定（自己搭的服务按这个实现）：`GET <地址>?mac=<12位小写MAC>`，返回
+
+```json
+{
+  "users": [{"id": "202500000000", "password": "xxx"}],
+  "service": "校园网",
+  "machine": "实验室服务器",
+  "ttl": 3600
+}
+```
+
+拿到之后：`service` 会定死门户接入类型（省掉「两个都试」那轮），`machine` 写进日志。
+密码是明文过网络的，**务必 HTTPS + token，不要暴露到公网**。
+
+### 设备号（物理 MAC）是怎么取的
+
+先分清两个都叫 mac 但不是一回事的东西：
+
+| | 是什么 | 用在哪 |
+|---|---|---|
+| **物理网卡 MAC** | 网卡上固化的地址，如 `00:e0:1a:00:23:a9` | 自建凭据服务的设备标识 |
+| **门户 queryString 里的 mac** | 网关下发的加密串，如 `67d1ff70…` | 门户登录时原样透传 |
+
+物理 MAC 的取值优先级：
+
+1. `SHMTU_AUTH_DEVICE_MAC` 显式配置
+2. 自动探测：读 sysfs，只认带 `device` 符号链接的网卡 ——
+   `veth` / `docker0` / `br-*` 这些虚拟接口天然被排除
+
+**容器必须用 `network_mode: host`**（compose 里已配好），
+这样容器看到的就是宿主机的物理网卡。非 host 网络下容器里只剩 veth，
+程序会**明确报错**让你配置 `SHMTU_AUTH_DEVICE_MAC`，而不是悄悄编一个假值。
+
+同理，门户 `queryString` 里读不到 `mac` 时也会显式告警 ——
+那个值参与密码加密，缺了会导致门户解不开密码，只报一句含糊的「认证失败」。
+
+### 全部配置项
 
 | 变量 | 说明 | 默认值 |
 |------|------|--------|
 | `SHMTU_AUTH_USER_LIST` | 学号列表，多个用 `;` 分隔 | - |
 | `SHMTU_AUTH_USER_PWD_<学号>` | 对应学号的密码 | - |
+| `SHMTU_AUTH_CREDENTIAL_URL` | 自建凭据服务地址，留空则不用 | - |
+| `SHMTU_AUTH_CREDENTIAL_TOKEN` | 凭据服务鉴权令牌（`X-Auth-Token`） | - |
+| `SHMTU_AUTH_CREDENTIAL_CACHE` | 凭据本地缓存路径 | `./data/credentials.json` |
+| `SHMTU_AUTH_CREDENTIAL_INSECURE` | 关闭 TLS 校验（自签名证书时用） | `false` |
+| `SHMTU_AUTH_DEVICE_MAC` | 手动指定设备号（物理 MAC） | 自动探测 |
 | `SHMTU_AUTH_CHECK_INTERVAL` | 轮询间隔秒数 | `60` |
 | `SHMTU_AUTH_RUN_ONCE` | 只执行一次检查 | `false` |
 | `SHMTU_AUTH_PROBE_URL` | 自定义探测URL | `http://1.1.1.1` |
@@ -129,12 +189,15 @@ docker compose restart
 docker_headless/
 ├── app/
 │   ├── __init__.py
-│   ├── auth_core.py         # 认证主逻辑（门户主流程 + H3C 兜底）
-│   ├── captcha_solver.py    # 验证码 OCR（ddddocr / pytesseract）
-│   ├── config.py            # 环境变量读取
-│   ├── eportal_protocol.py  # 门户协议（pageInfo / validcode / getServices / login）
-│   ├── main.py              # 轮询入口
-│   └── portal_crypto.py     # 门户 RSA 密码加密（纯 Python）
+│   ├── auth_core.py            # 认证主逻辑（门户主流程 + H3C 兜底）
+│   ├── captcha_solver.py       # 验证码 OCR（ddddocr / pytesseract）
+│   ├── config.py               # 环境变量读取 + 账号列表（含凭据服务）
+│   ├── credential_provider.py  # 自建凭据服务客户端
+│   ├── device_id.py            # 物理网卡 MAC 探测（设备号）
+│   ├── eportal_protocol.py     # 门户协议（pageInfo / validcode / getServices / login）
+│   ├── main.py                 # 轮询入口
+│   └── portal_crypto.py        # 门户 RSA 密码加密（纯 Python）
+├── .env.example                # ← 复制成 .env，唯一需要编辑的配置
 ├── Dockerfile
 ├── docker-compose.yml
 ├── requirements.txt
@@ -142,5 +205,7 @@ docker_headless/
 └── start.ps1
 ```
 
-> `portal_crypto.py` 与主包 `src/shmtu_auth/src/core/portal_crypto.py` 保持**逐字节一致**，
-> 由 `PyTest/test_portal_crypto_parity.py` 守护；改动任一份时两份都要同步。
+> `portal_crypto.py`、`device_id.py`、`credential_provider.py` 与主包
+> `src/shmtu_auth/src/core/` 下的同名文件保持**逐字节一致**，分别由
+> `PyTest/test_portal_crypto_parity.py`、`PyTest/test_device_id.py`、
+> `PyTest/test_credential_provider.py` 守护；改动任一份时两份都要同步。

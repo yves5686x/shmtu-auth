@@ -111,16 +111,53 @@ chmod +x start.sh
 ./start.sh
 ```
 
-## 环境变量
+## 配置
 
-**必选配置项：**
+**本地运行只有一个地方要改：`src/shmtu_auth/config/config.toml`。**
 
-学号列表中，学号之间用 `;` 分隔
+优先级是 `config.toml` > 环境变量 —— TOML 里写了值，同名环境变量就失效，
+所以想临时用环境变量覆盖，把那一行注释掉即可。
 
-* `SHMTU_AUTH_USER_LIST` : {学号1}; {学号2}
-* `SHMTU_AUTH_USER_PWD_{学号1}` : {学号1的密码}
-* `SHMTU_AUTH_USER_PWD_{学号2}` : {学号2的密码}
-* `SHMTU_AUTH_USER_PWD_ENCRYPT_{学号1}` : {学号1的密码的是否为密文，密文为1，否则不用填}
+### 本地账号（默认方式）
+
+```toml
+[User]
+SHMTU_AUTH_USER_LIST = "202500000000;202500000001"   # 学号，多个用分号分隔
+SHMTU_AUTH_USER_PWD_202500000000 = "密码1"
+SHMTU_AUTH_USER_PWD_202500000001 = "密码2"
+# 密码本身已是密文时才需要（值填 1）
+#SHMTU_AUTH_USER_PWD_ENCRYPT_202500000000 = "1"
+```
+
+### 自建凭据服务（可选，多设备场景）
+
+配好地址后，程序会用**本机物理网卡 MAC** 当设备号去换账号密码：
+换到了就用服务端的（并自动带上门户接入类型），换不到自动回退到上面的本地账号。
+
+```toml
+[Credential]
+SHMTU_AUTH_CREDENTIAL_URL = "https://your-server/device/{mac}/credential"
+SHMTU_AUTH_CREDENTIAL_TOKEN = "你的令牌"
+```
+
+接口约定：`GET <地址>?mac=<12位小写MAC>`，响应
+
+```json
+{"users": [{"id": "202500000000", "password": "xxx"}], "service": "校园网", "machine": "实验室服务器"}
+```
+
+密码是明文过网络的，**必须 HTTPS + token，不要暴露公网**。
+
+> ⚠️ 这里的设备号要的是**物理网卡 MAC**（如 `00:e0:1a:00:23:a9`），
+> 不是门户 URL 里那个加密过的 `mac` 串（如 `67d1ff70…`），两者完全不同。
+> 容器里需要 `network_mode: host` 才能看到宿主的物理网卡。
+
+### Docker 部署
+
+不用 `config.toml`，改 `docker_headless/.env`（从 `.env.example` 复制一份），
+变量名与上面完全一致。
+
+> 完整的配置项说明都写在 `config.toml` 的注释里，每一项都有。
 
 **可选配置项：**
 

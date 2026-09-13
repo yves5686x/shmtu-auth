@@ -1,5 +1,8 @@
 version: "3.8"
 
+# 注意：这是早期的主包镜像部署方式。无头 / 服务器场景推荐用 docker_headless/，
+#       镜像更小（python:3.12-slim + ddddocr），配置项也更新。
+#       配置写法两份完全一致，可直接把 ../docker_headless/.env.example 复制过来改名。
 services:
   shmtu-auth:
     build:
@@ -8,16 +11,14 @@ services:
     image: shmtu-auth:local
     container_name: shmtu-auth
     restart: unless-stopped
+    # 需要 host 网络才能看到宿主的物理网卡（设备号），门户认证的设备标识才自洽
     network_mode: host
     tty: true
     volumes:
       - ./logs:/usr/local/shmtu/shmtu-auth/shmtu_auth/logs
-    environment:
-      # 用户配置（多个学号用分号分隔）
-      - SHMTU_AUTH_USER_LIST=your_student_id
-      - SHMTU_AUTH_USER_PWD_your_student_id=your_password
-      # 检测间隔（秒）
-      - SHMTU_AUTH_TIME_INTERVAL=60
+    # 配置都写在同目录的 .env 里（从 ../docker_headless/.env.example 复制）
+    env_file:
+      - .env
     # 日志配置
     logging:
       driver: "json-file"

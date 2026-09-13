@@ -361,6 +361,15 @@ class ShmtuNetAuthCore:
             )
 
         mac = self._extract_mac(query_string)
+        if mac == DEFAULT_MAC:
+            # 门户 JS 在拿不到 mac 时也用这个值兜底，所以行为一致；但密码会用这个错误的
+            # mac 参与加密，服务端解密必然失败，最终只表现为含糊的「认证失败」。
+            # 不显式告警的话，排查时极易误判成账号密码错误。
+            logger.warning(
+                f"queryString 中没有 mac 参数，已退化成门户默认值 {DEFAULT_MAC}；"
+                "密码将用该值参与加密，门户多半解不开。"
+                "请检查 queryString 是否完整，容器需使用 host 网络"
+            )
 
         submit_pwd = pwd
         encrypt_flag = bool(password_encrypt)
