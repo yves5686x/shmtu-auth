@@ -1,5 +1,5 @@
 import json
-from urllib.parse import parse_qs, urlparse
+from urllib.parse import parse_qs, unquote, urlparse
 
 import requests
 from urllib3 import __version__ as urllib3_version
@@ -43,6 +43,26 @@ if urllib3_version.startswith("2."):
 # 超时配置（秒）
 CONNECT_TIMEOUT = 3  # 连接超时
 READ_TIMEOUT = 5     # 读取超时
+
+
+def _iter_query_string_variants(query_string: str):
+    """给出 queryString 的候选形态：原串，以及 URL 解码后的串。
+
+    探测拿到的 queryString 往往已经把 & 和 = 编码成 %26 / %3D（门户表单要求），
+    直接 parse_qs 会解析不出任何字段。这里把两种形态都交给调用方试一遍。
+    """
+    raw = (query_string or "").strip()
+    if not raw:
+        return
+
+    yield raw
+
+    try:
+        decoded = unquote(raw)
+    except Exception:  # noqa: BLE001
+        return
+    if decoded != raw:
+        yield decoded
 
 # 门户的两种接入类型：(显示名, service 提交值)
 #
@@ -166,13 +186,31 @@ class ShmtuNetAuthCore:
 
     @staticmethod
     def _extract_mac(query_string: str) -> str:
-        """从 queryString 中取 mac，门户 JS 取不到时会退化成 DEFAULT_MAC。"""
-        try:
-            values = parse_qs((query_string or "").lstrip("?"))
+        """从 queryString 中取 mac，取不到时退化成 DEFAULT_MAC。
+
+        queryString 在流程里有两种形态，必须都认：
+
+          - 未编码：``wlanuserip=xxx&mac=yyy&t=zzz``
+          - 已编码：``wlanuserip%3Dxxx%26mac%3Dyyy%26t%3Dzzz``（& → %26，= → %3D）
+
+        门户表单要求把 & 和 = 编码后提交，所以探测拿到的多半是**第二种**。
+        直接对它做 parse_qs 会把整串当成一个「没有值的 key」—— 实测表现就是
+        「queryString 里明明写着 mac=67d1ff70…，程序却说没有 mac」，
+        于是密码用 DEFAULT_MAC 参与加密，门户解不开，只回一句
+        「用户不存在或者密码错误!」，把人引向反复检查密码。
+
+        所以两种形态依次试，谁先解析出 mac 就用谁。
+        """
+        for candidate in _iter_query_string_variants(query_string):
+            try:
+                values = parse_qs(candidate.lstrip("?"))
+            except Exception:  # noqa: BLE001
+                continue
             mac = (values.get("mac") or [""])[0].strip()
-        except Exception:
-            mac = ""
-        return mac or DEFAULT_MAC
+            if mac:
+                return mac
+
+        return DEFAULT_MAC
 
     def _obtain_valid_code(self, image: bytes, provider: CaptchaProvider | None = None) -> str:
         """先 OCR，识别不出来再交给上层（GUI 弹窗）兜底。"""

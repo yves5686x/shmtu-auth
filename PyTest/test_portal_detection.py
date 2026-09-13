@@ -285,6 +285,62 @@ class TestProbeBypassesProxy:
         assert client.session.trust_env is False
 
 
+class TestExtractMac:
+    """mac 必须能从两种形态的 queryString 里取出来。
+
+    真实事故：queryString 里明明写着 ``mac=67d1ff70...``，日志却打出
+    「queryString 中没有 mac 参数，已退化成门户默认值 111111111」。
+
+    原因是探测拿到的 queryString 已把 & 和 = 编码成 %26 / %3D（门户表单要求），
+    直接 parse_qs 会把整串当成一个「没有值的 key」，一个字段都解析不出来。
+
+    后果很严重且很会骗人：密码按 ``RSA(password + ">" + mac)`` 加密，
+    mac 错了门户就解不开，只回一句「用户不存在或者密码错误!」——
+    看着像账号密码有问题，实际是 mac 取错了。
+    """
+
+    MAC = "67d1ff70d8b083fe77eff0367912afaa"
+    FIELDS = f"wlanuserip=8f36a4b9&wlanacname=436da45d&mac={MAC}&t=wireless-v2"
+
+    ENCODED = FIELDS.replace("=", "%3D").replace("&", "%26")
+
+    @staticmethod
+    def _main_extract():
+        return ShmtuNetAuthCore._extract_mac
+
+    @staticmethod
+    def _docker_extract():
+        with docker_app() as (_, auth_core, _, _):
+            return auth_core.HeadlessNetAuth()._extract_mac
+
+    @pytest.mark.parametrize("runner", ["_main_extract", "_docker_extract"])
+    def test_plain_query_string(self, runner):
+        assert getattr(self, runner)()(self.FIELDS) == self.MAC
+
+    @pytest.mark.parametrize("runner", ["_main_extract", "_docker_extract"])
+    def test_encoded_query_string(self, runner):
+        """这是实际会走到的形态（& → %26，= → %3D）。"""
+        assert getattr(self, runner)()(self.ENCODED) == self.MAC
+
+    @pytest.mark.parametrize("runner", ["_main_extract", "_docker_extract"])
+    def test_leading_question_mark(self, runner):
+        assert getattr(self, runner)()("?" + self.FIELDS) == self.MAC
+        assert getattr(self, runner)()("?" + self.ENCODED) == self.MAC
+
+    @pytest.mark.parametrize("runner", ["_main_extract", "_docker_extract"])
+    def test_missing_mac_falls_back_to_default(self, runner):
+        from shmtu_auth.src.core.portal_crypto import DEFAULT_MAC
+
+        assert getattr(self, runner)()("wlanuserip=8f36a4b9&t=wireless-v2") == DEFAULT_MAC
+
+    @pytest.mark.parametrize("runner", ["_main_extract", "_docker_extract"])
+    def test_empty_input_falls_back_to_default(self, runner):
+        from shmtu_auth.src.core.portal_crypto import DEFAULT_MAC
+
+        for empty in ("", None, "   "):
+            assert getattr(self, runner)()(empty) == DEFAULT_MAC
+
+
 class TestPublicApiStillExists:
     """防止重构时误删公开函数。
 

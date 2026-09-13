@@ -1,6 +1,9 @@
-from typing import List, NamedTuple, Tuple
+from typing import List, NamedTuple, Optional, Tuple
 
+import ipaddress
 import re
+import socket
+import threading
 from concurrent.futures import ThreadPoolExecutor
 from urllib.parse import urlparse
 
@@ -19,6 +22,9 @@ READ_TIMEOUT = 4     # 读取超时
 
 # 探测并发度。串行走 5 个地址最坏要 5×(2+4)=30 秒，慢到用户以为卡死。
 PROBE_WORKERS = 8
+
+# DNS 预检超时（秒）。见 probe_dns 的说明。
+DNS_TIMEOUT = 1.5
 
 # 门户域名特征。
 #
@@ -108,15 +114,71 @@ def _get_session() -> requests.Session:
     return _session
 
 
+def _is_ip_literal(host: str) -> bool:
+    """host 是不是裸 IP（如 1.1.1.1）—— 裸 IP 不需要 DNS 解析。"""
+    try:
+        ipaddress.ip_address((host or "").strip())
+        return True
+    except ValueError:
+        return False
+
+
+def _dns_resolve_one(host: str, timeout: float = DNS_TIMEOUT) -> Optional[bool]:
+    """带超时的单次 DNS 解析：True/False 是明确结果，None 表示超时未知。
+
+    ``socket.getaddrinfo`` **不支持超时参数**，而 Windows 在 DNS 服务器不可达时
+    会反复重试（还带 NetBIOS 回退），实测能把一次解析拖到几十秒。
+    这段时间完全不受 requests 的 timeout 约束 —— 因为 DNS 发生在建立连接
+    **之前**，(connect, read) 两个超时值管不着它。
+
+    实测某台机器：connect timeout 设的是 2 秒，实际等了 48 秒才报
+    ConnectTimeout，整轮探测耗时 56 秒。
+
+    所以放到 daemon 线程里跑，超时就放弃，不再干等。
+    """
+    box: List[bool] = []
+
+    def _worker() -> None:
+        try:
+            socket.getaddrinfo(host, None, socket.AF_INET)
+            box.append(True)
+        except Exception:  # noqa: BLE001
+            box.append(False)
+
+    worker = threading.Thread(target=_worker, daemon=True)
+    worker.start()
+    worker.join(timeout)
+    return box[0] if box else None
+
+
+def probe_dns(hosts: List[str], timeout: float = DNS_TIMEOUT) -> dict:
+    """并发做 DNS 预检，返回 {host: True/False/None}。
+
+    None 表示超时没结论（既不能说通也不能说不通）。
+    """
+    hosts = [h for h in (hosts or []) if h]
+    if not hosts:
+        return {}
+
+    with ThreadPoolExecutor(max_workers=min(len(hosts), 4)) as pool:
+        futures = {pool.submit(_dns_resolve_one, h, timeout): h for h in hosts}
+        return {futures[f]: f.result() for f in futures}
+
+
 def probe_many(
     urls: List[str],
     connect_timeout: float = CONNECT_TIMEOUT,
     read_timeout: float = READ_TIMEOUT,
+    dns_precheck: bool = True,
 ) -> List[ProbeResult]:
     """并发探测多个地址，返回结果**按输入顺序排列**。
 
     串行探测在待认证状态下每个地址都要等到超时，5 个地址就是几十秒；
     并发后总耗时取决于最慢的那一个。
+
+    ``dns_precheck`` 会先并发解析所有域名，解析明确失败的直接跳过（记为
+    status=0），不再发起 HTTP 请求。这是提速的关键 —— 见 ``_dns_resolve_one``
+    里那段说明，卡住的主要是 DNS 而不是连接本身。
 
     每个任务用独立 Session：requests 的 Session 不是线程安全的，
     共享一个在并发下会偶发连接错乱。连接复用的收益远小于正确性。
@@ -125,9 +187,25 @@ def probe_many(
     if not urls:
         return []
 
+    # DNS 预检：解析不了的域名直接跳过，避免在 Windows 上干等几十秒
+    dead_hosts: set[str] = set()
+    if dns_precheck:
+        hosts = [urlparse(u).hostname or "" for u in urls]
+        need_dns = sorted({h for h in hosts if h and not _is_ip_literal(h)})
+        if need_dns:
+            dns_result = probe_dns(need_dns)
+            dead_hosts = {h for h, ok in dns_result.items() if ok is False}
+            if dead_hosts:
+                logger.debug(f"DNS 预检失败，跳过这些域名: {sorted(dead_hosts)}")
+
     slots: List[ProbeResult | None] = [None] * len(urls)
 
     def _one(index: int, url: str) -> None:
+        host = urlparse(url).hostname or ""
+        if host in dead_hosts:
+            slots[index] = ProbeResult(url=url, text="", status=0, final_url="")
+            return
+
         session = requests.Session()
         session.trust_env = False
         try:
