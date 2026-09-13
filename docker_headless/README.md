@@ -128,6 +128,7 @@ SHMTU_AUTH_CREDENTIAL_TOKEN=你的令牌
 | `SHMTU_AUTH_CHECK_INTERVAL` | 轮询间隔秒数 | `60` |
 | `SHMTU_AUTH_RUN_ONCE` | 只执行一次检查 | `false` |
 | `SHMTU_AUTH_PROBE_URL` | 自定义探测URL | `http://1.1.1.1` |
+| `SHMTU_AUTH_QUERY_STRING` | 手动指定 queryString（完整认证页URL 或裸串），配了就跳过自动探测 | 自动探测 |
 | `SHMTU_AUTH_USER_AGENT` | 自定义UA | - |
 | `SHMTU_AUTH_LOGIN_URL` | 门户地址（覆盖内置默认） | `https://ismu.shmtu.edu.cn:8443/eportal/` |
 | `SHMTU_AUTH_PORTAL_SERVICE` | 强制指定 `service`，不填则依次尝试「校园网」和「iSMU」 | 依次尝试 |

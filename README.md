@@ -186,6 +186,45 @@ GUI 在每次点「开始认证」前换一次（拿不到就原样用界面里�
 GUI 的依赖里已经带上它了（`pip install -e ".[gui]"`）；命令行请自行
 `pip install ddddocr`。
 
+### 认证不上怎么排查
+
+先跑诊断脚本（只依赖 `requests`，可单独拷到出问题的机器上）：
+
+```bash
+python diagnose_portal.py
+```
+
+它会打出本机出口 IP、是否设了系统代理、每个探测地址的跳转链、抓到的
+queryString，最后给出结论。
+
+**报「Query String is Invalid」时**
+
+这句话是**我们自己的代码**说的，不是门户返回的，意思是没抓到 queryString，
+跟账号密码无关。程序靠「网关劫持 http 明文请求」来拿它，常见原因：
+
+* **机器设了代理** —— 请求走了代理就绕过了网关，劫持根本不会发生（头号原因）
+* 探测地址恰好被网关放行
+* 不在校园网内，或接了手机热点 / 其他 WiFi
+
+**手动指定 queryString（终极兜底）**
+
+在本机浏览器打开一个 **http** 网址（不要 https），等它跳到认证页后，把地址栏
+里那一整串 URL 粘给诊断脚本：
+
+```bash
+python diagnose_portal.py --url "<粘贴的完整URL>"
+```
+
+脚本会校验字段是否齐全（缺 `mac` 会导致门户解不开密码），并生成一行可直接用的
+配置。然后写进 `config.toml` 的 `[Portal]` 段：
+
+```toml
+SHMTU_AUTH_QUERY_STRING = "<那一整串URL>"
+```
+
+配了它程序会跳过自动探测。注意 queryString 由网关现生成、**绑定本机当前 IP**，
+换机器或重连网络后会失效，只适合临时救急或固定环境。
+
 ### Docker 部署
 
 不用 `config.toml`，改 `docker_headless/.env`（从 `.env.example` 复制一份）。
