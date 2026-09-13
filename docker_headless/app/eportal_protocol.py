@@ -16,7 +16,10 @@
 
 * 全流程必须复用**同一个 Session**，验证码与 JSESSIONID 绑定
 * 验证码是**一次性**的：失败响应会带上新的 ``validCodeUrl``，必须重新取图识别
-* ``service`` 由服务端下发（下拉框），有线取 ``校园网``、无线 i-SHMU 取 ``iSMU``
+* ``service`` 由服务端下发（下拉框），只有两种取值：有线 ``校园网``、无线 i-SHMU ``iSMU``。
+  本模块只提供查询手段（``query_services`` / ``query_account_service``）和编码工具
+  （:func:`encode_service_param`），**不负责选**：调用方一般是两种都试，
+  因为容器里的网络类型判断不准
 * RSA 公钥每次登录都要**重新获取**，不要写死
 """
 
@@ -271,7 +274,8 @@ class EPortalClient:
         （原始中文，提交前由 JS 编码）。这里解析成 ``[{value, name}]``。
 
         注意：本校门户 ``typeflag="true"``（后台统一配置），未登录时通常只下发
-        「系统默认服务」占位项，真实服务要靠 ``query_account_service`` 拿。
+        「系统默认服务」占位项，拿不到真实服务。**登录流程并不使用本方法的返回值
+        去选 service**（现在改成两个值都试了），它仅用于日志排查 / 人工确认。
         """
         url = f"{self._interface_url('getServices')}&queryString={query_string}"
         try:
@@ -326,7 +330,11 @@ class EPortalClient:
         * 有线（网口）环境的 queryString → ``校园网``
         * 无线 i-SHMU 环境的 queryString → ``iSMU``
 
-        因此它是比下拉框列表更可靠的取值来源。返回值需要经过
+        因此它是比下拉框列表更可靠的取值来源。
+
+        **但登录流程不使用它做选择**：容器里的网络类型判断经常不准，所以调用方改成
+        两种 service 都试（见 ``HeadlessNetAuth._portal_service_candidates``）。
+        本方法保留给日志排查 / 人工确认使用。返回值需要经过
         :func:`encode_service_param` 才能放进登录 payload。
         """
         if not username:

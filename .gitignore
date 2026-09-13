@@ -13,6 +13,9 @@ gui_config.json
 # 抓包文件：登录 HAR 里含真实学号与加密后的密码，禁止入库
 *.har
 
+# WorkBuddy 工作区数据（本地记忆里含本机绝对路径），不入库
+.workbuddy/
+
 # UV 相关文件
 .venv/
 uv.lock

@@ -1,8 +1,8 @@
 """``docker_headless`` 认证主流程的单测。
 
 Docker 部署是**无人值守**的：没有弹窗，验证码全靠 OCR，出问题也没人看得见。
-所以这里把「验证码重试、OCR 失败、密码加密、service 自动解析、兜底策略」这几条
-关键路径都钉住。
+所以这里把「两种接入类型依次尝试、验证码重试、OCR 失败、密码加密、兜底策略」
+这几条关键路径都钉住。
 
 ``EPortalClient`` 被替换成可编程的替身，测试不发任何真实请求。
 """
@@ -104,6 +104,9 @@ def env(monkeypatch):
         monkeypatch.setattr(
             auth_core, "EPortalClient", make_fake_portal_client(eportal_protocol.PortalPageInfo)
         )
+        # 真实环境靠 OCR 后端拿验证码；测试里默认假装后端可用，识别结果由
+        # use_ocr / no_ocr 控制。要验证「后端缺失就快速失败」用 no_ocr_backend。
+        monkeypatch.setattr(auth_core, "get_available_solvers", lambda: ["fake-ocr"])
 
         auth = auth_core.HeadlessNetAuth()
         # 真实 is_connected() 会去访问百度和 B 站，测试里一律当作离线
@@ -124,6 +127,11 @@ def use_ocr(env, monkeypatch, code="1234"):
 
 def no_ocr(env, monkeypatch):
     monkeypatch.setattr(env["auth_core"], "solve_captcha", lambda image: None)
+
+
+def no_ocr_backend(env, monkeypatch):
+    """模拟「容器里忘了装 OCR 依赖」：一个可用后端都没有。"""
+    monkeypatch.setattr(env["auth_core"], "get_available_solvers", lambda: [])
 
 
 # ------------------------------------------------------------------ 正常路径
@@ -157,13 +165,73 @@ def test_login_success_with_ocr_and_encryption(env, monkeypatch):
     assert payload["service"] == env["auth_core"].ServiceType.EDU
 
 
-def test_resolved_service_is_submitted(env, monkeypatch):
+def test_candidates_are_submitted_in_order(env, monkeypatch):
+    """两种接入类型依次尝试：第一个失败就换下一个，成功即停。"""
     use_ocr(env, monkeypatch)
-    monkeypatch.setattr(env["auth"], "_resolve_portal_service", lambda client, qs, user: "iSMU")
+    plan(
+        login_responses=[
+            {"result": "fail", "message": "认证失败"},
+            {"result": "success", "message": ""},
+        ],
+    )
+
+    ok, msg = env["auth"]._login_eportal(USER, PASSWORD, QUERY_STRING)
+
+    client = env["client"]()
+    assert (ok, msg) == (True, "Login Success (Portal)")
+    assert [item["service"] for item in client.submitted] == [
+        env["auth_core"].ServiceType.EDU,
+        env["auth_core"].ServiceType.ISMU,
+    ]
+    # 成功的那一个被记住，供本进程下次优先尝试
+    assert env["auth"]._last_ok_service == env["auth_core"].ServiceType.ISMU
+
+
+def test_both_services_failing_reports_both(env, monkeypatch):
+    use_ocr(env, monkeypatch)
+    plan(fallback_login=FAIL)
+
+    ok, msg = env["auth"]._login_eportal(USER, PASSWORD, QUERY_STRING)
+
+    assert ok is False
+    assert "两种接入类型均登录失败" in msg and "认证失败" in msg
+    assert len(env["client"]().submitted) == 2, "两种接入类型都要试过"
+
+
+def test_remembered_service_is_tried_first(env, monkeypatch):
+    use_ocr(env, monkeypatch)
+    env["auth"]._last_ok_service = env["auth_core"].ServiceType.ISMU
+    plan(fallback_login=FAIL)
 
     env["auth"]._login_eportal(USER, PASSWORD, QUERY_STRING)
 
-    assert env["client"]().submitted[-1]["service"] == "iSMU"
+    assert env["client"]().submitted[0]["service"] == env["auth_core"].ServiceType.ISMU
+
+
+def test_config_pins_service_and_skips_the_other(env, monkeypatch):
+    use_ocr(env, monkeypatch)
+    monkeypatch.setenv("SHMTU_AUTH_PORTAL_SERVICE", "iSMU")
+    plan(fallback_login=FAIL)
+
+    ok, msg = env["auth"]._login_eportal(USER, PASSWORD, QUERY_STRING)
+
+    client = env["client"]()
+    assert ok is False
+    assert msg == "认证失败", "定死一个 service 时不该出现「两种接入类型」的措辞"
+    assert [item["service"] for item in client.submitted] == ["iSMU"]
+
+
+def test_captcha_error_does_not_switch_service(env, monkeypatch):
+    """验证码问题换接入类型也没用：不该为它多跑一轮完整流程。"""
+    use_ocr(env, monkeypatch, "1111")
+    monkeypatch.setenv("SHMTU_AUTH_CAPTCHA_MAX_RETRY", "2")
+    plan(fallback_login={"result": "fail", "message": "验证码错误."})
+
+    ok, msg = env["auth"]._login_eportal(USER, PASSWORD, QUERY_STRING)
+
+    assert ok is False
+    assert "验证码" in msg
+    assert len(env["client"]().submitted) == 2, "只在第一种接入类型上重试，不该换 service"
 
 
 def test_password_not_re_encrypted_when_already_encrypted(env, monkeypatch):
@@ -253,17 +321,54 @@ def test_validcode_retry_exhausted(env, monkeypatch):
 # ------------------------------------------------------------- 验证码获取失败
 
 
-def test_ocr_failure_without_provider_does_not_submit(env, monkeypatch):
-    """无头环境没有弹窗兜底：识别失败就直接失败，不能拿空验证码去撞。"""
+def test_ocr_failure_retries_with_fresh_images(env, monkeypatch):
+    """无头环境没有弹窗兜底：识别不出来要换新图继续试，而不是立刻放弃。"""
     no_ocr(env, monkeypatch)
+    monkeypatch.setenv("SHMTU_AUTH_CAPTCHA_MAX_RETRY", "3")
 
     ok, msg = env["auth"]._login_eportal(USER, PASSWORD, QUERY_STRING)
 
     client = env["client"]()
     assert ok is False
-    assert "验证码识别失败" in msg
+    assert "未能识别" in msg
+    assert client.submitted == [], "识别不出验证码时不能拿空 validcode 去撞"
+    assert len(client.fetched_urls) == 3, "每轮都要重新取图（服务端每次都是新图）"
+
+
+def test_default_retry_count_is_generous(env, monkeypatch):
+    """无头环境扛不住单次识别失败，默认重试次数必须给足。"""
+    no_ocr(env, monkeypatch)
+    monkeypatch.delenv("SHMTU_AUTH_CAPTCHA_MAX_RETRY", raising=False)
+
+    env["auth"]._login_eportal(USER, PASSWORD, QUERY_STRING)
+
+    assert env["auth_core"].DEFAULT_CAPTCHA_MAX_RETRY >= 5
+    assert len(env["client"]().fetched_urls) == env["auth_core"].DEFAULT_CAPTCHA_MAX_RETRY
+
+
+def test_missing_ocr_backend_fails_fast(env, monkeypatch):
+    """忘了装 OCR 依赖要立刻说清楚，而不是跑满重试再报一句含糊的失败。"""
+    no_ocr_backend(env, monkeypatch)
+
+    ok, msg = env["auth"]._login_eportal(USER, PASSWORD, QUERY_STRING)
+
+    client = env["client"]()
+    assert ok is False
+    assert "OCR" in msg
     assert client.submitted == []
-    assert client.fetched_urls == ["/eportal/validcode?rnd=1"]
+    assert client.fetched_urls == [], "没有识别能力时连图都不必取"
+
+
+def test_missing_ocr_backend_is_ok_when_provider_given(env, monkeypatch):
+    """有弹窗 / 外部输入通道时，没有 OCR 后端也能正常登录。"""
+    no_ocr_backend(env, monkeypatch)
+    no_ocr(env, monkeypatch)
+
+    ok, msg = env["auth"]._login_eportal(
+        USER, PASSWORD, QUERY_STRING, captcha_provider=lambda image: "1234"
+    )
+
+    assert ok is True, msg
 
 
 def test_ocr_failure_falls_back_to_provider(env, monkeypatch):
@@ -301,18 +406,22 @@ def test_provider_raising_does_not_crash(env, monkeypatch):
     ok, msg = env["auth"]._login_eportal(USER, PASSWORD, QUERY_STRING, captcha_provider=boom)
 
     assert ok is False
-    assert "验证码识别失败" in msg
+    assert "未能识别" in msg
 
 
-def test_missing_validcode_image_aborts(env, monkeypatch):
+def test_missing_validcode_image_is_retried(env, monkeypatch):
+    """取图失败也要重试，不能第一张图挂了就整个登录失败。"""
     use_ocr(env, monkeypatch)
+    monkeypatch.setenv("SHMTU_AUTH_CAPTCHA_MAX_RETRY", "3")
     plan(images={"/eportal/validcode?rnd=1": None})
 
     ok, msg = env["auth"]._login_eportal(USER, PASSWORD, QUERY_STRING)
 
+    client = env["client"]()
     assert ok is False
-    assert "验证码图片" in msg
-    assert env["client"]().submitted == []
+    assert "验证码图片下载失败" in msg
+    assert client.submitted == []
+    assert len(client.fetched_urls) == 3
 
 
 # --------------------------------------------------------------- 失败与兜底
@@ -325,7 +434,8 @@ def test_non_captcha_failure_returns_server_message(env, monkeypatch):
     ok, msg = env["auth"]._login_eportal(USER, PASSWORD, QUERY_STRING)
 
     assert ok is False
-    assert msg == "认证失败"
+    # 两种接入类型都试过之后，服务端原文要保留在消息里，方便排查
+    assert "认证失败" in msg
 
 
 def test_login_skips_h3c_fallback_on_captcha_error(env, monkeypatch):

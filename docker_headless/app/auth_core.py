@@ -5,12 +5,17 @@ from urllib.parse import parse_qs, urlparse
 import requests
 import urllib3
 
-from app.captcha_solver import CaptchaProvider, normalize_code, solve_captcha
+from app.captcha_solver import (
+    CaptchaProvider,
+    get_available_solvers,
+    normalize_code,
+    solve_captcha,
+)
 from app.config import get_env_int, get_env_str
 from app.eportal_protocol import (
     DEFAULT_PORTAL_BASE,
-    PLACEHOLDER_SERVICE_PREFIX,
     EPortalClient,
+    PortalPageInfo,
     encode_service_param,
     is_valid_code_error,
 )
@@ -35,6 +40,24 @@ class ServiceType:
     ISMU = "iSMU"
 
 
+# 门户的两种接入类型：(显示名, service 提交值)
+#
+# 门户的 service 由服务端下发，本应二选一：有线「校园网」/ 无线 i-SHMU。但容器里的
+# 网络类型判断经常不准（拿到的可能是宿主机或上一跳的类型），选错的代价只是一轮多余
+# 的请求，所以这里直接两个都试，不再猜。详见 _portal_service_candidates()。
+DEFAULT_PORTAL_SERVICES: tuple[tuple[str, str], ...] = (
+    ("校园网(有线)", ServiceType.EDU),
+    ("iSMU(无线)", ServiceType.ISMU),
+)
+
+# 验证码自动重试次数的默认值。
+#
+# 无头环境**没有弹窗兜底**，单次 OCR 失败就只能重来，而服务端每 GET 一次就换一张新
+# 图，所以重试次数是提升无人值守成功率的主要手段。可用
+# SHMTU_AUTH_CAPTCHA_MAX_RETRY 覆盖。
+DEFAULT_CAPTCHA_MAX_RETRY = 6
+
+
 class HeadlessNetAuth:
     def __init__(self) -> None:
         login_api = get_env_str("SHMTU_AUTH_LOGIN_URL", "")
@@ -45,6 +68,9 @@ class HeadlessNetAuth:
         self.user_index = ""
         self.is_login = False
         self.data: dict[str, str] = {}
+        # 上一次成功登录时生效的 service 值。仅内存记忆，用于把优先尝试顺序提前，
+        # 不会改变"两个都试"的语义（见 _portal_service_candidates）。
+        self._last_ok_service = ""
         self.session = requests.Session()  # 复用连接
         self.headers = {
             "Content-Type": "application/x-www-form-urlencoded; charset=UTF-8",
@@ -243,109 +269,100 @@ class HeadlessNetAuth:
             return manual
         return ""
 
-    def _resolve_portal_service(self, client: EPortalClient, query_string: str, user: str) -> str:
-        """确定登录用的 ``service`` 参数（返回可直接放进 payload 的值）。
+    def _captcha_capable(self, provider: CaptchaProvider | None = None) -> bool:
+        """当前环境有没有办法拿到验证码：OCR 后端可用，或上层提供了人工输入通道。
 
-        门户页面上这是一个下拉框，值由服务端下发，所以不要写死。取值优先级：
+        无头容器里两者都没有的话，就没必要往门户发登录请求了 —— 直接报「装 OCR」比
+        跑满重试次数后给一句含糊的失败有用得多。
+        """
+        if provider is not None:
+            return True
+        return bool(get_available_solvers())
 
-        1. 配置项 ``SHMTU_AUTH_PORTAL_SERVICE``（显式覆盖）
-        2. 账号绑定服务 —— ``userV2.do?method=getServices``，即用户输入学号后门户
-           自动选中下拉框的那次查询。**会随网络环境返回 ``校园网`` 或 ``iSMU``**，
-           是最可靠的来源
-        3. 门户下发的下拉项（唯一项 / 首项）
-        4. 兜底 :attr:`ServiceType.EDU`
+    def _portal_service_candidates(self) -> list[tuple[str, str]]:
+        """返回本次登录要**依次尝试**的 ``(显示名, service 提交值)`` 列表。
 
-        注意 ``service`` 的编码：门户 JS 对隐藏域做了两次 ``encodeURIComponent``，
-        而 requests 的 ``data=`` 还会再编码一次，因此这里统一只编码一次，
-        见 :func:`encode_service_param`。
+        注意这里刻意不做「按当前网络类型二选一」的判断：门户的 ``service`` 虽然由
+        服务端下发，但容器 / Docker / 网关代拨场景下网络类型经常判断错，拿到的是宿主
+        机或上一跳的类型。两种都试一遍的代价很小（每轮约一次取图 + 一次 POST），却能
+        让有线、无线、以及判断错误的场景全部自愈。
+
+        顺序：
+
+        1. 配置项 ``SHMTU_AUTH_PORTAL_SERVICE`` 非空 → **只试它**（显式定死，
+           不再兜底，方便排查）
+        2. 否则 → ``校园网(有线)`` 与 ``iSMU(无线)`` 依次尝试
+        3. 若本进程上一次登录成功过，把当时生效的那个提到最前面（守护进程从第二轮起
+           就能一次命中；这只是内存记忆、不落盘，两个候选仍然都会被尝试）
+
+        :return: ``[(显示名, 可直接放进 payload 的 service 值), ...]``，至少一项
         """
         configured = get_env_str("SHMTU_AUTH_PORTAL_SERVICE", "")
         if configured:
-            LOGGER.info("Portal service from config: %s", configured)
-            return encode_service_param(configured)
+            resolved = encode_service_param(configured)
+            LOGGER.info("Portal service pinned by config: %s -> %s", configured, resolved)
+            return [(configured, resolved)]
 
-        account_service = client.query_account_service(query_string, user)
-        if account_service:
-            resolved = encode_service_param(account_service)
-            LOGGER.info(
-                "Portal service auto-detected (account bound): %s -> %s", account_service, resolved
-            )
-            return resolved
+        candidates = [(name, encode_service_param(value)) for name, value in DEFAULT_PORTAL_SERVICES]
 
-        candidates = [
-            item["value"]
-            for item in client.query_services(query_string)
-            if item.get("value") and not item["value"].startswith(PLACEHOLDER_SERVICE_PREFIX)
-        ]
-        if candidates:
-            scope = "single option" if len(candidates) == 1 else "first option"
-            LOGGER.info("Portal service auto-detected (%s): %s", scope, candidates[0])
-            return encode_service_param(candidates[0])
+        remembered = getattr(self, "_last_ok_service", "")
+        if remembered:
+            hit = next((item for item in candidates if item[1] == remembered), None)
+            if hit is not None:
+                candidates.remove(hit)
+                candidates.insert(0, hit)
+                LOGGER.info("Portal service candidates: %s first (worked last time)", hit[0])
 
-        LOGGER.warning(
-            "Portal service not resolved (portal offered no real option), "
-            "fallback to EDU: %s. "
-            "If login keeps failing, set SHMTU_AUTH_PORTAL_SERVICE explicitly.",
-            ServiceType.EDU,
+        LOGGER.info(
+            "Portal service candidates (try in order): %s",
+            ", ".join(name for name, _ in candidates),
         )
-        return ServiceType.EDU
+        return candidates
 
-    def _login_eportal(
+    def _login_portal_once(
         self,
+        client: EPortalClient,
+        page_info: PortalPageInfo,
+        service: str,
         user: str,
-        password: str,
+        submit_pwd: str,
+        encrypt_flag: bool,
         query_string: str,
-        password_encrypt: bool = False,
         captcha_provider: CaptchaProvider | None = None,
     ) -> tuple[bool, str]:
-        """门户主流程：index.jsp → pageInfo → validcode → login（带验证码与 RSA 加密）。"""
-        query_string = (query_string or "").strip()
-        if not query_string:
-            return False, "Query string is invalid"
-
-        client = EPortalClient(self.session, self.portal_base)
-        client.open_entry(query_string)
-
-        page_info = client.query_page_info(query_string)
-        if not page_info.raw:
-            return False, "pageInfo request failed"
-
-        service = self._resolve_portal_service(client, query_string, user)
-        mac = self._extract_mac(query_string)
-
-        submit_pwd = password
-        encrypt_flag = bool(password_encrypt)
-        if not encrypt_flag and page_info.password_encrypt and len(password) < ENCRYPTED_PASSWORD_MIN_LENGTH:
-            try:
-                submit_pwd = encrypt_password(
-                    password,
-                    mac,
-                    page_info.public_key_modulus,
-                    page_info.public_key_exponent,
-                )
-                encrypt_flag = True
-            except Exception as exc:
-                LOGGER.exception("Password encryption failed: %s", exc)
-                return False, f"Password encryption failed: {exc}"
-
-        # 验证码是一次性的：命中验证码类错误就用新的 validCodeUrl 重取重试
+        """针对单个 ``service`` 跑完整的「取验证码 → 识别 → 提交」重试循环。"""
         max_attempts = 1
         if page_info.need_valid_code:
-            max_attempts = max(1, get_env_int("SHMTU_AUTH_CAPTCHA_MAX_RETRY", 3) or 3)
+            configured = get_env_int("SHMTU_AUTH_CAPTCHA_MAX_RETRY", DEFAULT_CAPTCHA_MAX_RETRY)
+            max_attempts = max(1, configured or DEFAULT_CAPTCHA_MAX_RETRY)
+
         last_message = ""
+        unrecognized = 0
 
         for attempt in range(1, max_attempts + 1):
             valid_code = ""
             if page_info.need_valid_code:
+                # 每次 fetch 服务端都会换一张新图，所以重试是真的换了个验证码
                 image = client.fetch_valid_code(page_info.valid_code_url)
                 if not image:
-                    return False, "验证码图片下载失败"
+                    last_message = "验证码图片下载失败"
+                    LOGGER.warning("%s（第 %s/%s 次）", last_message, attempt, max_attempts)
+                    continue
 
                 valid_code = self._obtain_valid_code(image, captcha_provider)
                 if not valid_code:
-                    return False, "验证码识别失败，需要人工输入"
+                    # 无头环境识别不出来是常态，不能当成致命错误直接放弃，
+                    # 换一张图继续试才是正解
+                    unrecognized += 1
+                    last_message = "验证码识别失败"
+                    LOGGER.warning(
+                        "验证码识别失败（第 %s/%s 次），换一张重试", attempt, max_attempts
+                    )
+                    continue
 
-                LOGGER.info("Login attempt %s/%s with validcode", attempt, max_attempts)
+                LOGGER.info(
+                    "Login attempt %s/%s with validcode, service=%s", attempt, max_attempts, service
+                )
 
             payload = {
                 "userId": user,
@@ -374,10 +391,12 @@ class HeadlessNetAuth:
 
             last_message = self.info or "Portal login failed"
 
+            # 非验证码类错误（账号密码错、服务不对、被风控……）：重试同样的图没意义，
+            # 交给上层决定是否换一种接入类型
             if not is_valid_code_error(last_message):
                 return False, last_message
 
-            # 验证码问题：换新图重试
+            # 验证码被服务端拒绝：换新图重试
             LOGGER.warning("Valid code rejected: %s", last_message)
             refreshed = str(result.get("validCodeUrl") or "").strip()
             if refreshed:
@@ -387,7 +406,98 @@ class HeadlessNetAuth:
                 if not page_info.need_valid_code:
                     return False, last_message
 
+        if unrecognized == max_attempts:
+            return False, f"验证码连续 {max_attempts} 次未能识别，请检查 OCR 后端是否可用"
         return False, f"验证码连续 {max_attempts} 次未通过: {last_message}"
+
+    def _login_eportal(
+        self,
+        user: str,
+        password: str,
+        query_string: str,
+        password_encrypt: bool = False,
+        captcha_provider: CaptchaProvider | None = None,
+    ) -> tuple[bool, str]:
+        """门户主流程：index.jsp → pageInfo → validcode → login（带验证码与 RSA 加密）。
+
+        会对 :meth:`_portal_service_candidates` 返回的每种接入类型各跑一遍完整流程
+        （见 :meth:`_login_portal_once`），因此有线 / 无线都能自动命中，不依赖运行
+        环境上报的网络类型。
+        """
+        query_string = (query_string or "").strip()
+        if not query_string:
+            return False, "Query string is invalid"
+
+        client = EPortalClient(self.session, self.portal_base)
+        client.open_entry(query_string)
+
+        page_info = client.query_page_info(query_string)
+        if not page_info.raw:
+            return False, "pageInfo request failed"
+
+        if page_info.need_valid_code and not self._captcha_capable(captcha_provider):
+            LOGGER.error("Portal requires a captcha but no OCR backend or manual input is available")
+            return False, (
+                "门户要求图形验证码，但当前环境既没有可用的 OCR 后端，也没有人工输入通道；"
+                "请安装 OCR 依赖（pip install -r requirements-ocr.txt）"
+            )
+
+        mac = self._extract_mac(query_string)
+
+        submit_pwd = password
+        encrypt_flag = bool(password_encrypt)
+        if not encrypt_flag and page_info.password_encrypt and len(password) < ENCRYPTED_PASSWORD_MIN_LENGTH:
+            try:
+                submit_pwd = encrypt_password(
+                    password,
+                    mac,
+                    page_info.public_key_modulus,
+                    page_info.public_key_exponent,
+                )
+                encrypt_flag = True
+            except Exception as exc:
+                LOGGER.exception("Password encryption failed: %s", exc)
+                return False, f"Password encryption failed: {exc}"
+
+        candidates = self._portal_service_candidates()
+        last_message = ""
+
+        for index, (display_name, service) in enumerate(candidates):
+            LOGGER.info(
+                "Portal login trying %s (%s) [%s/%s]",
+                display_name,
+                service,
+                index + 1,
+                len(candidates),
+            )
+
+            ok, message = self._login_portal_once(
+                client,
+                page_info,
+                service,
+                user,
+                submit_pwd,
+                encrypt_flag,
+                query_string,
+                captcha_provider,
+            )
+            if ok:
+                # 记住这次生效的类型，供本进程后续登录优先尝试
+                self._last_ok_service = service
+                return True, message
+
+            last_message = message
+
+            # 验证码类问题换接入类型也没用，直接返回，别白白多跑一轮
+            if is_valid_code_error(message) or "验证码" in message:
+                return False, message
+
+            if index + 1 < len(candidates):
+                LOGGER.warning("%s 登录失败（%s），换下一种接入类型重试", display_name, message)
+
+        if len(candidates) > 1:
+            return False, f"两种接入类型均登录失败（{last_message}）"
+        return False, last_message
 
     # ------------------------------------------------------------- H3C 兜底
 

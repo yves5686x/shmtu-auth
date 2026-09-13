@@ -60,22 +60,6 @@ class FakeSession:
         return self._pick(url)
 
 
-class StubClient:
-    """替代 EPortalClient，用于验证 service 取值优先级。"""
-
-    def __init__(self, account_service: str = "", options=None):
-        self._account_service = account_service
-        self._options = list(options or [])
-        self.account_calls = []
-
-    def query_account_service(self, query_string, user):
-        self.account_calls.append((query_string, user))
-        return self._account_service
-
-    def query_services(self, query_string):
-        return [dict(item) for item in self._options]
-
-
 @contextlib.contextmanager
 def docker_app():
     """把 docker_headless 当作 ``app`` 包临时导入，退出时完全还原 sys.modules。"""
