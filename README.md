@@ -48,13 +48,16 @@
 * macOS命令行(二进制文件、pip)
 * Linux命令行(pip)
 * Docker镜像
-
-GUI Coming Soon...
+* GUI(Windows / macOS / Linux，需额外安装 GUI 依赖)
 
 ## Features
 
 * [x] 自动认证
+* [x] 自动识别图形验证码（OCR），识别不出时 GUI 会弹窗手输
+* [x] 账号密码可从自建凭据服务获取（用物理网卡 MAC 当设备号）
 * [x] 程序记录日志
+* [x] Docker 无头部署
+* [x] GUI：管理账号、查看日志、一键导出多机 Docker 配置
 
 ## 使用方法
 
@@ -134,6 +137,9 @@ SHMTU_AUTH_USER_PWD_202500000001 = "密码2"
 配好地址后，程序会用**本机物理网卡 MAC** 当设备号去换账号密码：
 换到了就用服务端的（并自动带上门户接入类型），换不到自动回退到上面的本地账号。
 
+在 `config.toml` 里取消 `[Credential]` 段的注释再填值 —— 这一整段默认是注释掉的，
+留空即表示不使用。
+
 ```toml
 [Credential]
 SHMTU_AUTH_CREDENTIAL_URL = "https://your-server/device/{mac}/credential"
@@ -148,24 +154,52 @@ SHMTU_AUTH_CREDENTIAL_TOKEN = "你的令牌"
 
 密码是明文过网络的，**必须 HTTPS + token，不要暴露公网**。
 
+命令行、Docker、GUI 三条路都认这一份配置：CLI 和 Docker 在启动/轮询时去换，
+GUI 在每次点「开始认证」前换一次（拿不到就原样用界面里填的账号）。
+
 > ⚠️ 这里的设备号要的是**物理网卡 MAC**（如 `00:e0:1a:00:23:a9`），
 > 不是门户 URL 里那个加密过的 `mac` 串（如 `67d1ff70…`），两者完全不同。
 > 容器里需要 `network_mode: host` 才能看到宿主的物理网卡。
 
-### Docker 部署
-
-不用 `config.toml`，改 `docker_headless/.env`（从 `.env.example` 复制一份），
-变量名与上面完全一致。
-
-> 完整的配置项说明都写在 `config.toml` 的注释里，每一项都有。
-
-**可选配置项：**
+### 可选配置项
 
 * `SHMTU_MACHINE_NAME`: 服务器名称
-* `SHMTU_AUTH_TIME_INTERVAL`: 认证状态检测时间间隔
+* `SHMTU_AUTH_TIME_INTERVAL`: 认证状态检测时间间隔（秒，默认 10）
+* `SHMTU_AUTH_PORTAL_SERVICE`: 门户接入类型，不填则依次尝试「校园网」（有线）和「iSMU」（无线）
+* `SHMTU_AUTH_CAPTCHA_OCR`: 是否启用验证码自动识别（默认 true）
+* `SHMTU_AUTH_CAPTCHA_MAX_RETRY`: 单次登录内验证码重试次数（默认 6）
+
 <!-- - `SHMTU_AUTH_WEBHOOK_WEWORK` : 企业微信机器人WebHook -->
 <!-- - `SHMTU_WEBHOOK_SLEEP_TIME_START` : WebHook免打扰-开始时间 -->
 <!-- - `SHMTU_WEBHOOK_SLEEP_TIME_END` : WebHook免打扰-结束时间 -->
+
+### 关于验证码
+
+门户登录已强制 4 位图形验证码，且密码用 RSA 加密后提交。默认用 OCR 自动识别
+（`ddddocr`），识别不出来就换一张新图重试。
+
+能不能缺 `ddddocr`，取决于有没有界面兜底：
+
+* **GUI**：没装也能用，OCR 识别不出来会弹窗请你手输
+* **命令行 / Docker**：没有弹窗兜底，**必须装 `ddddocr`**，否则遇到验证码会直接登录失败
+
+GUI 的依赖里已经带上它了（`pip install -e ".[gui]"`）；命令行请自行
+`pip install ddddocr`。
+
+### Docker 部署
+
+不用 `config.toml`，改 `docker_headless/.env`（从 `.env.example` 复制一份）。
+
+> ⚠️ 大部分变量名跟上面一致，但**有几个不一样**，最容易踩的是轮询间隔：
+> 本地叫 `SHMTU_AUTH_TIME_INTERVAL`，Docker 里叫 `SHMTU_AUTH_CHECK_INTERVAL`。
+> 写混了不会报错，只会静默用默认值。
+> 完整变量表见 [docker_headless/README.md](docker_headless/README.md)。
+
+> 完整的配置项说明都写在 `config.toml` 的注释里，每一项都有。
+
+多机部署不用手抄：GUI 用户列表页底部的「为服务器生成Docker配置」可以按
+「每台 N 个账号」切分，一次性生成每台的 `.env` + `docker-compose.yml`
+（见下面 [GUI说明](#gui说明)）。
 
 ## 开发指南
 
@@ -176,9 +210,39 @@ SHMTU_AUTH_CREDENTIAL_TOKEN = "你的令牌"
 
 ## GUI说明
 
-Windows下AMD显卡显示Mica云母特效会有问题，因此全局关闭了Mica云母特效。
+### 安装与启动
 
-macOS x64下Python版本必须小于等于3.11，否则无法安装PySide6。
+GUI 依赖（PySide6 / QFluentWidgets 等）不在默认安装里，需要单独装：
+
+```bash
+pip install -e ".[gui]"
+```
+
+然后启动：
+
+```bash
+python -m shmtu_auth.src.gui.gui_main_application
+```
+
+没有 `pip install -e .` 的话，加一句 `PYTHONPATH=src` 再跑上面那条命令。
+
+> 注意：`start_cli.py` 和 `shmtu-auth` 命令走的是**命令行**模式，不会启动 GUI。
+
+### GUI 能做什么
+
+* 在界面里增删账号，数据存在 `data/user_list.pickle`（不读 `config.toml` 的 `[User]` 段）
+* 验证码默认自动识别，识别不出来会弹窗让你手输
+* **自建凭据服务**：点「开始认证」前会先按物理网卡 MAC 去 `[Credential]`
+  里配的服务换账号，换到的排在前面优先尝试；服务不可用就用界面里填的账号，
+  行为跟没配服务时完全一样
+* **为服务器生成Docker配置**：用户列表页底部的按钮，把有效账号按「每台 N 个」
+  切分，为每台机器生成一套 `.env` + `docker-compose.yml` 和一份部署说明
+
+### 已知问题
+
+* Windows下AMD显卡显示Mica云母特效会有问题，因此全局关闭了Mica云母特效。
+* macOS x64下Python版本必须小于等于3.11，否则无法安装PySide6。
+* 导出的 `machine_N/.env` 里是**明文密码**，注意目录权限，别提交到仓库。
 
 ## License
 

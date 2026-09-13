@@ -55,6 +55,10 @@ cp .env.example .env    # 然后编辑 .env
 所有配置都写在 `docker_headless/.env` 里，`docker-compose.yml` 通过 `env_file` 读它。
 （早先是把变量直接写进 compose，现已迁出，避免同一份配置散在多处。）
 
+多台机器部署不用手抄：主仓库 GUI 用户列表页底部的「为服务器生成Docker配置」
+可以按「每台 N 个账号」切分，一次性生成每台的 `.env` + `docker-compose.yml`，
+用的就是本文件下面这张变量表。
+
 ### 账号密码从哪来（二选一）
 
 **方式一：本地填写**（默认）
