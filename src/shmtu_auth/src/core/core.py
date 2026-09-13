@@ -623,8 +623,10 @@ class ShmtuNetAuthCore:
         if user == "" or pwd == "":
             return False, "用户名或密码为空"
 
-        # 如果外部已检测过网络状态，则跳过 get_query_string 内部的网络检测
-        auth_result = get_query_string(skip_connectivity_check=skip_network_check).strip()
+        # 上面 not skip 时刚跑过 test_net()（同一套探测），skip 时是调用方明确
+        # 说外部已检测过 —— 两种情况下 get_query_string 内部都不需要再做一遍
+        # 连通性探测。之前这里会把它白白跑两遍，认证前多等好几秒。
+        auth_result = get_query_string(skip_connectivity_check=True).strip()
         portal_url, current_query_string = self._split_auth_result(auth_result)
 
         # 1) 门户主流程（含验证码 + 密码加密）

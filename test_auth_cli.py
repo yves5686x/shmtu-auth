@@ -103,11 +103,13 @@ def main() -> int:
         return 1
 
     print(f"\n[2/2] 开始认证（学号 {user[:4]}****）...")
+    # 上面 [1/2] 已经做过联网检测了，skip_network_check=True 让 login()
+    # 内部不再重复跑一遍连通性探测
     ok, msg = core.login(
         user,
         pwd,
         password_encrypt=False,
-        skip_network_check=False,
+        skip_network_check=True,
         captcha_provider=build_captcha_provider(args.manual),
     )
 

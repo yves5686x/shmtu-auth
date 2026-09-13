@@ -826,7 +826,10 @@ class HeadlessNetAuth:
         if not user or not password:
             return False, "Username or password is empty"
 
-        auth_result = self.get_auth_result(skip_connectivity_check=skip_network_check).strip()
+        # 上面 not skip 时刚做过连通性检测（同一套探测），skip 时是调用方
+        # 明确说外部已检测过 —— 两种情况下内部都不需要再做一遍，
+        # 否则认证前会把同一套探测白白跑两遍，多等好几秒。
+        auth_result = self.get_auth_result(skip_connectivity_check=True).strip()
         portal_url, query_string = self._split_auth_result(auth_result)
 
         # 1) 门户主流程（含验证码 + 密码加密）
