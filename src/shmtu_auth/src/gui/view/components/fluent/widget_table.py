@@ -4,11 +4,16 @@ from qfluentwidgets import TableWidget
 
 
 class QFluentTableWidget(TableWidget):
-    selected_items_count: int = 0
-    selected_index: List[int] = []
+    # 这两个必须是实例属性：写成类属性的话，所有表格实例会共享同一个 list，
+    # 一个表格选中的行会跑到另一个表格上（可变对象作为类属性是经典陷阱）。
+    selected_items_count: int
+    selected_index: List[int]
 
     def __init__(self, parent=None):
         super().__init__(parent)
+
+        self.selected_items_count = 0
+        self.selected_index = []
 
         self.__connect_slot()
 

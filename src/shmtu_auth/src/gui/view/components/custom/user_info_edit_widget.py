@@ -1,3 +1,4 @@
+import datetime
 from typing import List
 
 from PySide6.QtCore import QRegularExpression, Qt, Signal
@@ -166,10 +167,20 @@ class UserInfoEditWidget(QWidget):
 
     def __selection_changed(self):
         selection_count = len(self.selected_index)
+        user_count = len(self.user_list) if self.user_list else 0
 
-        self.setEnabled(selection_count == 1)
+        # 列表为空时没有任何可选项，若跟着一起禁用，用户就永远填不了第一个
+        # 账号 —— 会被困在「没有账号 → 编辑区置灰 → 加不了账号」的死循环里。
+        # 所以空列表时把编辑区当成「新建」面板开放，保存即新增一个账号。
+        is_creating = user_count == 0
+
+        self.setEnabled(selection_count == 1 or is_creating)
+
+        self.button_save.setText("添加用户" if is_creating else "保存修改")
 
         if selection_count == 0:
+            if is_creating:
+                self.__clear_input_box_data()
             return
 
         index = self.selected_index[0]
@@ -230,6 +241,16 @@ class UserInfoEditWidget(QWidget):
         if not self.__before_save_blocker():
             return
 
+        # 空列表时编辑区是「新建」面板：先补一个空账号，
+        # 再把选中项指向它，后面的写入就跟正常修改完全一致了。
+        # （有选中项时不会走到这里；列表非空却无选中时编辑区是禁用的。）
+        if len(self.selected_index) == 0:
+            if self.user_list is None or len(self.user_list) > 0:
+                return
+
+            self.user_list.append(UserItem())
+            self.selected_index.append(len(self.user_list) - 1)
+
         # 修改数据
         self.__modify_user_data(index=self.selected_index[0])
 
@@ -246,6 +267,10 @@ class UserInfoEditWidget(QWidget):
 
         # 发送信号
         self.onModifyButtonClick.emit()
+
+        # 列表从空变成非空，编辑区要从「新建」切回「修改」：
+        # 刷新一次，让按钮文字和启用状态跟上（否则会一直显示「添加用户」）。
+        self.__selection_changed()
 
     def __modify_user_data(self, index: int = 0):
         if index >= len(self.user_list):
@@ -278,3 +303,18 @@ class UserInfoEditWidget(QWidget):
 
         q_date = convert_date_to_qdate(current_item.expire_date)
         self.widget_expire_date.setDate(q_date)
+
+    def __clear_input_box_data(self):
+        """清空输入框，供「新建」场景使用。
+
+        过期时间与 ``UserItem`` 的默认值保持一致（今天 + 3 年），
+        避免新建的账号一填完就被判为已过期。
+        """
+        self.input_user_id.setText("")
+        self.input_user_name.setText("")
+        self.input_password.setText("")
+
+        self.checkbox_support_type.set_selected_list(["校园网"])
+
+        default_expire = datetime.date.today() + datetime.timedelta(days=3 * 365)
+        self.widget_expire_date.setDate(convert_date_to_qdate(default_expire))

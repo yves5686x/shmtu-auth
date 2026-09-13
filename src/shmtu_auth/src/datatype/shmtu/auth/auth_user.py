@@ -259,6 +259,36 @@ def print_user_list_id(user_list: List[UserItem]) -> None:
     print(result_str)
 
 
+def insert_user_items(
+    user_list: List[UserItem],
+    new_items: List[UserItem],
+    insert_index: int = -1,
+) -> int:
+    """把若干账号插入列表，返回**第一个新增项**所在的下标。
+
+    ``insert_index`` 为负数表示追加到末尾。
+
+    返回下标是给界面用的：新增之后必须立刻选中对应的那一行，
+    否则「用户信息编辑」会因为「没有选中项」一直保持禁用，
+    空列表下新建的账号就永远填不进学号密码。
+
+    没有新增任何项时返回 ``-1``。
+    """
+    if not new_items:
+        return -1
+
+    if insert_index < 0:
+        first_index = len(user_list)
+        user_list.extend(new_items)
+        return first_index
+
+    for item in new_items:
+        user_list.insert(insert_index, item)
+        insert_index += 1
+
+    return insert_index - len(new_items)
+
+
 def user_list_select_list_by_index(user_list: List[UserItem], index: List[int]) -> List[UserItem]:
     result_list = []
     for i in index:

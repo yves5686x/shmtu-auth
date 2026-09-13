@@ -10,6 +10,7 @@ from qfluentwidgets import FluentIcon as FIF
 from shmtu_auth.src.config.project_directory import get_directory_data_path
 from shmtu_auth.src.datatype.shmtu.auth.auth_user import (
     UserItem,
+    insert_user_items,
     user_is_exist_in_list,
     user_list_move_down,
     user_list_move_to_bottom,
@@ -97,7 +98,7 @@ class UserListInterface(GalleryInterface):
         self.table_widget.itemSelectionChanged.connect(self.__table_item_selected)
         self.__table_item_selected()
 
-        self.user_info_edit_widget.onModifyButtonClick.connect(lambda: self.table_widget.update_user_list())
+        self.user_info_edit_widget.onModifyButtonClick.connect(self.__on_user_modified)
 
     def read_status(self):
         if not os.path.exists(pickle_user_list_path):
@@ -123,6 +124,17 @@ class UserListInterface(GalleryInterface):
 
     def __user_list_updated(self):
         self.save_status()
+
+    def __on_user_modified(self):
+        """编辑区保存之后的回调：刷新表格，并保持选中刚编辑的那一行。
+
+        ``update_user_list()`` 里的 ``setRowCount`` 会把选中状态清掉，
+        新建场景下刚加的那一行会「保存完就丢了选中」，看着像没保存上。
+        """
+        self.table_widget.update_user_list()
+
+        if len(self.selected_index) > 0:
+            self.table_widget.set_select_index_list([self.selected_index[0]])
 
     def __table_item_selected(self):
         self.selected_index.clear()
@@ -278,14 +290,22 @@ class UserListInterface(GalleryInterface):
 
             new_item_list.append(current_item)
 
-        if insert_index == -1:
-            self.user_list.extend(new_item_list)
-        else:
-            # new_item_list.reverse()
-            for item in new_item_list:
-                self.user_list.insert(insert_index, item)
-                insert_index += 1
+        first_index = insert_user_items(
+            user_list=self.user_list,
+            new_items=new_item_list,
+            insert_index=insert_index,
+        )
+
         self.table_widget.update_user_list()
+
+        # 选中新增的第一行。
+        #
+        # 不这么做的话，新建之后没有任何选中项，右侧「用户信息编辑」会因为
+        # setEnabled(len(selected_index) == 1) 保持置灰，于是空列表下新建的
+        # 账号永远填不进学号密码 —— 用户被困在
+        # 「没有账号 → 编辑区禁用 → 加不了账号」的死循环里。
+        if first_index >= 0:
+            self.table_widget.set_select_index_list([first_index])
 
     def __menu_action_create(self):
         insert_index = -1
