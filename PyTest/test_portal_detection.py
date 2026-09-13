@@ -130,64 +130,141 @@ class TestManualQueryString:
 class TestConnectivity:
     """连通性探测不能把「上不了网」误判成「已联网」。
 
-    真实踩过的坑：机器设了代理，代理返回 502 错误页。原判断只看
-    ``status_code <= 0``，502 也算通过，于是程序认为「已联网、无需认证」，
-    直接返回空 queryString —— 用户看到的就是「明明上不了网却显示在线」。
+    踩过两个坑，都在下面守着：
+
+    1. 机器设了代理时，代理返回 502 错误页。原判断只看 ``status_code <= 0``，
+       502 也算通过，于是程序认为「已联网、无需认证」，直接返回空 queryString
+       —— 用户看到的就是「明明上不了网却显示在线」。
+
+    2. 更隐蔽的：透明代理 / 缓存 / DNS 劫持会对所有 http 请求返回 200，
+       但内容根本不是目标网站。此时 https 一定不通（校园网不劫持 https）。
+       所以判据是「必须至少一个 https 目标通过」，只有 http 通过一律判离线。
     """
 
-    @staticmethod
-    def _main_connected(monkeypatch, responses):
+    BAIDU = "http://www.baidu.com"
+    BILIBILI = "https://www.bilibili.com/"
+    QQ = "https://www.qq.com/"
+
+    @classmethod
+    def _as_mapping(cls, responses) -> dict:
+        """把 (url, (text, status, final_url)) 序列转成按 url 索引的表。
+
+        用映射而不是迭代器，测试就不必关心探测目标的个数和顺序，
+        增删探测目标时不会因为数量对不上而误报 StopIteration。
+        """
+        return dict(responses)
+
+    @classmethod
+    def _main_connected(cls, monkeypatch, responses):
         from shmtu_auth.src.core import get_query_string_requests as mod
 
-        it = iter(responses)
-        monkeypatch.setattr(mod, "get_text_code", lambda url, *a, **k: next(it))
+        mapping = cls._as_mapping(responses)
+
+        def fake_probe(urls, *args, **kwargs):
+            out = []
+            for url in urls:
+                text, status, final_url = mapping.get(url, ("", 0, ""))
+                out.append(
+                    mod.ProbeResult(
+                        url=url, text=text, status=status, final_url=final_url
+                    )
+                )
+            return out
+
+        monkeypatch.setattr(mod, "probe_many", fake_probe)
         return mod.is_connect_by_sites()
 
-    @staticmethod
-    def _docker_connected(monkeypatch, responses):
+    @classmethod
+    def _docker_connected(cls, monkeypatch, responses):
         with docker_app() as (_, auth_core, _, _):
             client = auth_core.HeadlessNetAuth()
-            it = iter(responses)
-            monkeypatch.setattr(client, "_get_text_code", lambda url: next(it))
+            mapping = cls._as_mapping(responses)
+            monkeypatch.setattr(
+                client, "_get_text_code", lambda url: mapping.get(url, ("", 0, ""))
+            )
             return client.is_connected()
 
     @pytest.mark.parametrize("runner", ["_main_connected", "_docker_connected"])
     def test_502_from_proxy_is_offline(self, monkeypatch, runner):
         """代理返回 502 错误页：必须判为离线（原来会误判成在线）。"""
-        responses = [("", 502, "http://www.baidu.com"), ("", 502, "https://www.bilibili.com/")]
+        responses = [
+            (self.BAIDU, ("", 502, self.BAIDU)),
+            (self.BILIBILI, ("", 502, self.BILIBILI)),
+            (self.QQ, ("", 502, self.QQ)),
+        ]
         assert getattr(self, runner)(monkeypatch, responses) is False
 
     @pytest.mark.parametrize("runner", ["_main_connected", "_docker_connected"])
     def test_407_proxy_auth_required_is_offline(self, monkeypatch, runner):
-        responses = [("", 407, "http://www.baidu.com"), ("", 407, "https://www.bilibili.com/")]
+        responses = [
+            (self.BAIDU, ("", 407, self.BAIDU)),
+            (self.BILIBILI, ("", 407, self.BILIBILI)),
+            (self.QQ, ("", 407, self.QQ)),
+        ]
         assert getattr(self, runner)(monkeypatch, responses) is False
 
     @pytest.mark.parametrize("runner", ["_main_connected", "_docker_connected"])
     def test_200_with_foreign_body_is_offline(self, monkeypatch, runner):
         """状态码 200 但内容是代理/网关的拦截页，也不能算联网。"""
         responses = [
-            ("<html>Proxy Error</html>", 200, "http://www.baidu.com"),
-            ("<html>Proxy Error</html>", 200, "https://www.bilibili.com/"),
+            (self.BAIDU, ("<html>Proxy Error</html>", 200, self.BAIDU)),
+            (self.BILIBILI, ("<html>Proxy Error</html>", 200, self.BILIBILI)),
+            (self.QQ, ("<html>Proxy Error</html>", 200, self.QQ)),
         ]
         assert getattr(self, runner)(monkeypatch, responses) is False
 
     @pytest.mark.parametrize("runner", ["_main_connected", "_docker_connected"])
-    def test_real_baidu_page_is_online(self, monkeypatch, runner):
-        responses = [("<html>百度 baidu.com</html>", 200, "https://www.baidu.com/")]
+    def test_real_page_is_online(self, monkeypatch, runner):
+        """https 目标真正拿到内容才算联网。"""
+        responses = [
+            (self.BILIBILI, ("<html>bilibili 哔哩哔哩</html>", 200, self.BILIBILI)),
+        ]
+        assert getattr(self, runner)(monkeypatch, responses) is True
+
+    @pytest.mark.parametrize("runner", ["_main_connected", "_docker_connected"])
+    def test_http_only_200_is_offline(self, monkeypatch, runner):
+        """【本次修复的核心】http 全 200、https 全不通 —— 一眼假，必须判离线。
+
+        真实场景：校园网未认证时，透明代理 / 缓存 / DNS 劫持会对所有 http
+        请求返回 200（内容空白或是拦截页），但 https 必然不通。
+        只凭 http 的 200 就判「已联网」，程序会认为无需认证，
+        用户就彻底上不了网了。
+        """
+        responses = [
+            (self.BAIDU, ("<html>百度 baidu.com</html>", 200, self.BAIDU)),
+            # https 全部连不上
+            (self.BILIBILI, ("", 0, "")),
+            (self.QQ, ("", 0, "")),
+        ]
+        assert getattr(self, runner)(monkeypatch, responses) is False
+
+    @pytest.mark.parametrize("runner", ["_main_connected", "_docker_connected"])
+    def test_https_error_response_still_means_online(self, monkeypatch, runner):
+        """https 返回 4xx/5xx 也算外网可达 —— 跟「连不上」是两回事。
+
+        服务器能返回 412 / 501（WAF 拦爬虫），说明 TLS 握手成功、真的到了
+        服务器；而未认证时 https 是超时（状态码 0），根本拿不到响应。
+        把两者都当成「不通」会让已经能上网的机器被反复判定为需认证。
+        """
+        responses = [
+            (self.BAIDU, ("<html>百度 baidu.com</html>", 200, self.BAIDU)),
+            (self.BILIBILI, ("<html>waf blocked</html>", 412, self.BILIBILI)),
+        ]
         assert getattr(self, runner)(monkeypatch, responses) is True
 
     @pytest.mark.parametrize("runner", ["_main_connected", "_docker_connected"])
     def test_redirected_to_portal_is_offline(self, monkeypatch, runner):
         """被 captive portal 劫持时必须判为离线。"""
         responses = [
-            ("<html>portal</html>", 200, NEW_PORTAL),
-            ("<html>portal</html>", 200, NEW_PORTAL),
+            (self.BAIDU, ("<html>portal</html>", 200, NEW_PORTAL)),
+            (self.BILIBILI, ("<html>portal</html>", 200, NEW_PORTAL)),
+            (self.QQ, ("<html>portal</html>", 200, NEW_PORTAL)),
         ]
         assert getattr(self, runner)(monkeypatch, responses) is False
 
     @pytest.mark.parametrize("runner", ["_main_connected", "_docker_connected"])
     def test_request_exception_is_offline(self, monkeypatch, runner):
-        responses = [("", 0, ""), ("", 0, "")]
+        responses = []
         assert getattr(self, runner)(monkeypatch, responses) is False
 
 

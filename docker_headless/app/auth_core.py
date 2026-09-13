@@ -167,23 +167,71 @@ class HeadlessNetAuth:
         targets = [
             ("http://www.baidu.com", ("baidu.com",), ("baidu", "百度")),
             ("https://www.bilibili.com/", ("bilibili.com",), ("bilibili",)),
+            ("https://www.qq.com/", ("qq.com",), ("qq.com",)),
         ]
+
+        https_passed: list[str] = []
+        http_passed: list[str] = []
+        https_reachable: list[str] = []
+
         for url, expected_hosts, body_markers in targets:
             text, status_code, final_url = self._get_text_code(url)
             LOGGER.debug("Connectivity probe %s -> status=%s final=%s", url, status_code, final_url)
 
+            # 状态码 0 = 连不上（超时 / DNS 失败），没有任何响应
+            if status_code == 0:
+                continue
+            # 有响应且没被劫持 ⇒ 这个目标够得着，外网是通的
+            if not self._is_expected_host(final_url, expected_hosts):
+                continue
+            if urlparse(url).scheme == "https":
+                https_reachable.append(url)
+
             # 只有 2xx 才算真的拿到了内容。4xx / 5xx 说明请求被中间设备挡了回来，
             # 典型如代理返回的 407（需代理认证）、502（坏网关）。
             if not 200 <= status_code < 300:
-                continue
-            if not self._is_expected_host(final_url, expected_hosts):
                 continue
             # 内容校验：挡住代理 / 网关 / DNS 劫持返回的伪页面
             lowered = (text or "").lower()
             if body_markers and not any(m.lower() in lowered for m in body_markers):
                 LOGGER.debug("Unexpected body from %s; treat as offline", url)
                 continue
+
+            if urlparse(url).scheme == "https":
+                https_passed.append(url)
+            else:
+                http_passed.append(url)
+
+        # 必须证明外网真的可达。
+        #
+        # 校园网（以及绝大多数 captive portal）只劫持 http 明文、不碰 https。
+        # 所以「http 全 200、https 全部**连不上**」是一眼假的组合 —— 那些 http 200
+        # 只可能是透明代理 / 缓存 / DNS 劫持伪造的，真机上浏览器同样打不开。
+        #
+        # 但要注意区分 https 的两种失败：
+        #   状态码 0（超时）→ 根本没到服务器 → 外网不通
+        #   状态码 4xx/5xx  → TLS 握手成功、服务器真响应了（如 WAF 拦爬虫），
+        #                     外网其实是通的，只是这个目标不待见我们
+        #
+        # 判错的代价不对称：把未联网误判成已联网会导致不认证、用户彻底上不了网；
+        # 反过来只是多试一次认证，门户多半直接通过。所以拿不准一律判未联网。
+        if https_passed:
             return True
+
+        if http_passed and https_reachable:
+            LOGGER.info(
+                "http passed (%s) and https reachable (%s); online",
+                ", ".join(http_passed),
+                ", ".join(https_reachable),
+            )
+            return True
+
+        if http_passed:
+            LOGGER.info(
+                "Only http probes passed (%s); https unreachable (status 0) — "
+                "treating http 200 as forged, network offline",
+                ", ".join(http_passed),
+            )
         return False
 
     def _extract_query_string_from_url(self, any_url: str) -> str:

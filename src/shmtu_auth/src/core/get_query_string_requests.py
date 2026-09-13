@@ -1,6 +1,7 @@
-from typing import Tuple
+from typing import List, NamedTuple, Tuple
 
 import re
+from concurrent.futures import ThreadPoolExecutor
 from urllib.parse import urlparse
 
 import requests
@@ -13,8 +14,11 @@ logger = get_logger()
 _session: requests.Session | None = None
 
 # 超时配置（秒）
-CONNECT_TIMEOUT = 3  # 连接超时
-READ_TIMEOUT = 5     # 读取超时
+CONNECT_TIMEOUT = 2  # 连接超时
+READ_TIMEOUT = 4     # 读取超时
+
+# 探测并发度。串行走 5 个地址最坏要 5×(2+4)=30 秒，慢到用户以为卡死。
+PROBE_WORKERS = 8
 
 # 门户域名特征。
 #
@@ -80,6 +84,15 @@ def looks_like_portal(final_url: str, original_url: str = "") -> bool:
     return False
 
 
+class ProbeResult(NamedTuple):
+    """一次探测的结果。text 保留下来是为了做响应体特征校验。"""
+
+    url: str            # 原始请求地址
+    text: str = ""      # 响应体（已按表观编码解码）
+    status: int = 0     # 状态码，0 表示请求异常
+    final_url: str = ""  # 重定向后的最终地址
+
+
 def _get_session() -> requests.Session:
     """获取全局 Session，复用连接"""
     global _session
@@ -95,16 +108,59 @@ def _get_session() -> requests.Session:
     return _session
 
 
+def probe_many(
+    urls: List[str],
+    connect_timeout: float = CONNECT_TIMEOUT,
+    read_timeout: float = READ_TIMEOUT,
+) -> List[ProbeResult]:
+    """并发探测多个地址，返回结果**按输入顺序排列**。
+
+    串行探测在待认证状态下每个地址都要等到超时，5 个地址就是几十秒；
+    并发后总耗时取决于最慢的那一个。
+
+    每个任务用独立 Session：requests 的 Session 不是线程安全的，
+    共享一个在并发下会偶发连接错乱。连接复用的收益远小于正确性。
+    """
+    urls = list(urls or [])
+    if not urls:
+        return []
+
+    slots: List[ProbeResult | None] = [None] * len(urls)
+
+    def _one(index: int, url: str) -> None:
+        session = requests.Session()
+        session.trust_env = False
+        try:
+            response = session.get(
+                url, timeout=(connect_timeout, read_timeout)
+            )
+            response.encoding = response.apparent_encoding
+            slots[index] = ProbeResult(
+                url=url,
+                text=response.text or "",
+                status=response.status_code,
+                final_url=response.url,
+            )
+        except Exception as e:  # noqa: BLE001
+            logger.debug(f"Probe failed: {url} -> {type(e).__name__}: {e}")
+            slots[index] = ProbeResult(url=url, text="", status=0, final_url="")
+        finally:
+            session.close()
+
+    with ThreadPoolExecutor(max_workers=min(len(urls), PROBE_WORKERS)) as pool:
+        for index, url in enumerate(urls):
+            pool.submit(_one, index, url)
+
+    return [item for item in slots if item is not None]
+
+
 def get_text_code(url: str, timeout: float = READ_TIMEOUT) -> Tuple[str, int, str]:
-    # noinspection PyBroadException
-    try:
-        response = _get_session().get(url, timeout=(CONNECT_TIMEOUT, timeout))
-        # 自动识别编码，防止中文乱码
-        response.encoding = response.apparent_encoding
-        return response.text, response.status_code, response.url
-    except Exception as e:
-        logger.debug(f"Request Error: {e}")
+    """单地址探测，返回 (响应体, 状态码, 最终URL)。失败时状态码为 0。"""
+    results = probe_many([url], read_timeout=timeout)
+    if not results:
         return "", 0, ""
+    item = results[0]
+    return item.text, item.status, item.final_url
 
 
 def _is_expected_host(final_url: str, expected_hosts: tuple[str, ...]) -> bool:
@@ -121,44 +177,114 @@ def _is_expected_host(final_url: str, expected_hosts: tuple[str, ...]) -> bool:
 CONNECTIVITY_TARGETS: tuple[tuple[str, tuple[str, ...], tuple[str, ...]], ...] = (
     ("http://www.baidu.com", ("baidu.com",), ("baidu", "百度")),
     ("https://www.bilibili.com/", ("bilibili.com",), ("bilibili",)),
+    ("https://www.qq.com/", ("qq.com",), ("qq.com",)),
 )
 
 
+def judge_connectivity(
+    observations: List[tuple[str, tuple[str, ...], tuple[str, ...], ProbeResult]]
+) -> Tuple[bool, str]:
+    """根据探测结果判断是否真的能上网。
+
+    ``observations`` 每项为 ``(探测URL, 期望域名, 响应体特征串, 探测结果)``。
+
+    逐条看三条硬指标，任一不满足就不算通：
+
+    1. 状态码必须是 2xx —— 4xx/5xx 说明被中间设备挡回来了
+    2. 最终 URL 必须还在期望域名上 —— 跳走了说明被劫持
+    3. 响应体必须含该站点的特征串 —— 挡住伪造的空壳页面
+
+    最后还有一条**决定性**的：必须证明外网真的可达。
+
+    校园网（以及绝大多数 captive portal）只劫持 http 明文，不碰 https。
+    所以「http 全 200、https 全部**连不上**」是一眼假的组合 —— 那些 http 200
+    只可能是透明代理 / 缓存服务器 / DNS 劫持伪造的，真机上浏览器同样打不开。
+
+    注意要区分 https 的两种失败，判据完全不同：
+
+      * 状态码 0（超时 / 连接失败）→ 根本没到服务器 → 外网不通
+      * 状态码 4xx / 5xx         → TLS 握手成功、服务器真的响应了
+                                  （常见于 WAF 拦爬虫，如 B 站 412、腾讯 501）
+                                  → 外网其实是通的，只是这个目标不待见我们
+
+    只凭 http 的 200 就判「已联网」，程序会认为无需认证，用户就彻底上不了网了。
+
+    判错的代价是不对称的：
+      把「未联网」误判成「已联网」→ 不认证 → 用户上不了网（严重）
+      把「已联网」误判成「未联网」→ 多试一次认证，门户多半直接通过（无害）
+    所以拿不准时一律判未联网。
+    """
+    https_passed: List[str] = []
+    http_passed: List[str] = []
+    https_reachable: List[str] = []
+    rejections: List[str] = []
+
+    for url, expected_hosts, body_markers, result in observations:
+        if result.status == 0:
+            rejections.append(f"{url} 请求失败")
+            continue
+
+        # 有响应且没被劫持 ⇒ 这个目标够得着，外网是通的
+        if _is_expected_host(result.final_url, expected_hosts):
+            if urlparse(url).scheme == "https":
+                https_reachable.append(url)
+        else:
+            rejections.append(f"{url} 被劫持到 {result.final_url}")
+            continue
+
+        if not 200 <= result.status < 300:
+            rejections.append(f"{url} 状态 {result.status}")
+            continue
+        if body_markers and not any(
+            (marker or "").lower() in (result.text or "").lower()
+            for marker in body_markers
+        ):
+            rejections.append(f"{url} 响应体不是预期内容")
+            continue
+
+        if urlparse(url).scheme == "https":
+            https_passed.append(url)
+        else:
+            http_passed.append(url)
+
+    if https_passed:
+        return True, f"https 目标 {https_passed[0]} 正常返回预期内容"
+
+    if http_passed and https_reachable:
+        return True, (
+            "http 目标 {} 返回预期内容，且 https 目标有响应（{}），外网可达"
+        ).format(", ".join(http_passed), ", ".join(https_reachable))
+
+    if http_passed:
+        return False, (
+            "只有 http 通道通过（{}），https 目标全部连不上（状态码 0）。"
+            "http 的 200 很可能是透明代理 / 缓存 / DNS 劫持伪造的，不能算已联网"
+        ).format(", ".join(http_passed))
+
+    return False, "所有探测目标都失败：" + "；".join(rejections or ["无探测结果"])
+
+
 def is_connect_by_sites() -> bool:
-    """用百度 / B 站探测联网状态，任一真正拿到内容即认为已联网。"""
+    """用百度 / B 站 / QQ 探测联网状态，只有真正拿到内容才算已联网。"""
     logger.info("Starting connectivity probe...")
 
-    for url, expected_hosts, body_markers in CONNECTIVITY_TARGETS:
-        logger.info(f"Probing: {url}")
-        text, status_code, final_url = get_text_code(url)
-        logger.info(f"Result: status={status_code}, final_url={final_url}")
+    urls = [target[0] for target in CONNECTIVITY_TARGETS]
+    results = probe_many(urls)
 
-        # 只有 2xx 才算真的拿到了内容。
-        # 4xx / 5xx 说明请求被中间设备挡了回来 —— 典型如代理返回的
-        # 407（需代理认证）、502（坏网关）。这些以前都会被当成「已联网」。
-        if not 200 <= status_code < 300:
-            logger.info(f"Connectivity probe rejected: {url}, status={status_code}")
-            continue
+    by_url = {item.url: item for item in results}
+    observations = [
+        (url, hosts, markers, by_url.get(url, ProbeResult(url=url)))
+        for url, hosts, markers in CONNECTIVITY_TARGETS
+    ]
 
-        # 被 captive portal 劫持时会跳到门户域名，这里必须排除
-        if not _is_expected_host(final_url, expected_hosts):
-            logger.info(f"Connectivity probe redirected: {url} -> {final_url}")
-            continue
+    online, reason = judge_connectivity(observations)
+    for url, _hosts, _markers, result in observations:
+        logger.info(
+            f"Probe {url}: status={result.status}, final={result.final_url}"
+        )
 
-        # 内容校验：挡住代理 / 网关 / DNS 劫持返回的伪页面
-        lowered = (text or "").lower()
-        if body_markers and not any(m.lower() in lowered for m in body_markers):
-            logger.info(
-                f"Connectivity probe got unexpected body from {url} "
-                f"(no marker of {body_markers}); treat as offline"
-            )
-            continue
-
-        logger.info(f"Connectivity probe success: {url}")
-        return True
-
-    logger.info("All connectivity probes failed, network offline.")
-    return False
+    logger.info(f"Connectivity verdict: online={online} ({reason})")
+    return online
 
 
 def is_connect_by_google() -> bool:
@@ -199,23 +325,28 @@ def get_query_string_by_url(url: str = "http://1.1.1.1", skip_connectivity_check
         "http://www.shmtu.edu.cn",
     ]
 
+    # 并发探测：待认证状态下每个地址都要等到超时，串行下来是几十秒，
+    # 慢到让人以为程序卡死。probe_many 保证返回顺序与 check_urls 一致，
+    # 所以「按顺序取第一个命中」的语义跟原来的串行写法完全相同。
+    results = probe_many(check_urls)
+
     hit: tuple[str, str, str] | None = None   # (探测地址, 最终URL, 响应体)
     last: tuple[str, str, str] | None = None  # 最后一次有效响应，meta refresh 兜底用
 
-    for check_url in check_urls:
-        logger.debug(f"尝试访问 {check_url} 获取认证跳转")
-        res_string, res_code, final_url = get_text_code(check_url)
-        logger.debug(f"URL: {check_url} -> Status: {res_code} -> Final: {final_url}")
+    for item in results:
+        logger.debug(
+            f"URL: {item.url} -> Status: {item.status} -> Final: {item.final_url}"
+        )
 
-        if not final_url:
+        if not item.final_url:
             continue
 
-        last = (check_url, final_url, res_string)
+        last = (item.url, item.final_url, item.text)
 
         # 命中就立刻停，否则后面探测地址返回的正常页面会把结果覆盖掉
-        if looks_like_portal(final_url, original_url=check_url):
-            logger.debug(f"命中认证页: {check_url} -> {final_url}")
-            hit = (check_url, final_url, res_string)
+        if looks_like_portal(item.final_url, original_url=item.url):
+            logger.debug(f"命中认证页: {item.url} -> {item.final_url}")
+            hit = (item.url, item.final_url, item.text)
             break
 
     # 一个都没命中门户时，退化用最后一次有效响应去试 meta refresh
