@@ -5,13 +5,15 @@
      排除 GUI / 凭据服务 / OCR 等干扰因素。测通后再把结论同步回 GUI。
 
 用法（在仓库根目录执行）:
-  python test_auth_cli.py                       # 交互式输入学号密码
+  python test_auth_cli.py                       # 交互式输入学号密码，直接认证
   python test_auth_cli.py 1852xxxx password     # 命令行直接给账号密码
   python test_auth_cli.py --check               # 只测联网状态 + 门户探测，不登录
   python test_auth_cli.py --manual              # 不用 OCR，每轮验证码弹到文件人工输入
   python test_auth_cli.py --service "校园网"     # 强制 service（有线=校园网, 无线=iSMU）
   python test_auth_cli.py --qs "<认证页URL或queryString>"   # 手动指定 queryString
 
+默认**不做联网检测**（待认证环境下 https 探测目标必然超时，白等 ~8 秒），
+直接进认证流程；想看联网状态时用 --check。
 依赖: requests, urllib3<2, loguru（仓库 requirements 已含）; ddddocr 可选。
 """
 
@@ -90,11 +92,15 @@ def main() -> int:
 
     core = ShmtuNetAuthCore()
 
-    print("\n[1/2] 检测联网状态 ...")
-    online = core.test_net()
-    print(f"      联网状态: {'已联网（无需认证）' if online else '未认证'}")
     if args.check:
+        print("\n[1/2] 检测联网状态 ...")
+        online = core.test_net()
+        print(f"      联网状态: {'已联网（无需认证）' if online else '未认证'}")
         return 0 if online else 2
+
+    # 默认跳过联网检测：待认证环境下 https 探测目标必然超时，白等 ~8 秒。
+    # 想看联网状态用 --check。
+    print("\n[1/2] 已跳过联网检测（默认；需要时加 --check）")
 
     user = args.user or input("请输入学号: ").strip()
     pwd = args.password or input("请输入密码: ").strip()
@@ -103,8 +109,7 @@ def main() -> int:
         return 1
 
     print(f"\n[2/2] 开始认证（学号 {user[:4]}****）...")
-    # 上面 [1/2] 已经做过联网检测了，skip_network_check=True 让 login()
-    # 内部不再重复跑一遍连通性探测
+    # 联网检测已跳过，skip_network_check=True 让 login() 内部也不再跑连通性探测
     ok, msg = core.login(
         user,
         pwd,
