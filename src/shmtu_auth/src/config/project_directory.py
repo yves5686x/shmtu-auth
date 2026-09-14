@@ -7,15 +7,17 @@ project_name = "shmtu_auth"
 py_mode = True
 gui_mode = False
 
-print("Py Mode:", py_mode)
-print("GUI Mode:", gui_mode)
-
 
 def get_current_py_path() -> str:
     return os.path.dirname(os.path.abspath(__file__))
 
 
 def get_pyfile_base_path() -> str:
+    """源码运行时的基准目录（仓库根）。
+
+    从本文件所在目录往上退 4 层：config → src → shmtu_auth → src → 仓库根。
+    注意这里假设了源码目录的固定层级，包被安装到 site-packages 后不再成立。
+    """
     current_dir_path = get_current_py_path()
 
     for _ in range(4):
@@ -25,7 +27,7 @@ def get_pyfile_base_path() -> str:
 
 
 def get_running_directory() -> str:
-    return get_running_directory()
+    return os.getcwd()
 
 
 def get_directory_base_path() -> str:
@@ -34,6 +36,9 @@ def get_directory_base_path() -> str:
 
     if py_mode:
         return get_pyfile_base_path()
+
+    # 两个模式都没开时退回当前工作目录，避免返回 None 让下游 join 报错。
+    return get_running_directory()
 
 
 def get_directory_child(child_name: str) -> str:
@@ -58,6 +63,9 @@ def get_directory_log_path():
 
 
 if __name__ == "__main__":
+    print("Py Mode:", py_mode)
+    print("GUI Mode:", gui_mode)
+    print("Running Directory:", get_running_directory())
     print(get_directory_base_path())
     print(get_directory_config_path())
     print(get_directory_data_path())

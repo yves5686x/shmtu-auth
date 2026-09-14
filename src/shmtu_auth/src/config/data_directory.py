@@ -1,4 +1,5 @@
 import os
+import sys
 
 
 def get_windows_data_path(project_name=""):
@@ -20,6 +21,8 @@ def get_mac_data_path(project_name=""):
     if len(project_path):
         data_path = os.path.join(data_path, project_path)
 
+    os.makedirs(data_path, exist_ok=True)
+
     return data_path
 
 
@@ -30,14 +33,19 @@ def get_linux_data_path(project_name=""):
     if len(project_path):
         data_path = os.path.join(data_path, project_path)
 
+    os.makedirs(data_path, exist_ok=True)
+
     return data_path
 
 
 def get_data_path(project_name=""):
-    if os.name == "nt":
-        return get_windows_data_path(project_name)
-    elif os.name == "mac":
+    # macOS 的 os.name 也是 "posix"，所以必须先按 sys.platform 判 darwin，
+    # 否则永远落进下面的 posix 分支，macOS 会拿到 ~/.config 而不是
+    # ~/Library/Application Support。
+    if sys.platform == "darwin":
         return get_mac_data_path(project_name)
+    elif os.name == "nt":
+        return get_windows_data_path(project_name)
     elif os.name == "posix":
         return get_linux_data_path(project_name)
     else:
@@ -45,7 +53,8 @@ def get_data_path(project_name=""):
 
 
 if __name__ == "__main__":
-    print(os.name)
-    print(get_windows_data_path("shmtu_auth"))
-    print(get_mac_data_path("shmtu_auth"))
-    print(get_linux_data_path("shmtu_auth"))
+    print("os.name:", os.name)
+    print("sys.platform:", sys.platform)
+    # 只演示当前平台真正会用的那个：直接调其余平台的分支会因为取不到
+    # USERPROFILE 之类的环境变量而抛 KeyError。
+    print(get_data_path("shmtu_auth"))
