@@ -8,7 +8,6 @@ from qfluentwidgets import (
     InfoBar,
     PrimaryPushSettingCard,
     RangeConfigItem,
-    ScrollArea,
     SettingCardGroup,
     Slider,
     qconfig,
@@ -21,6 +20,7 @@ from shmtu_auth.src.gui.common.credential_bridge import (
     fetch_service_users,
     merge_service_users,
 )
+from shmtu_auth.src.gui.common.scroll_tuning import PerfScrollArea
 from shmtu_auth.src.gui.common.signal_bus import auth_status_changed, log_new, signal_bus
 from shmtu_auth.src.gui.common.style_sheet import StyleSheet
 from shmtu_auth.src.gui.feature.network_auth import AuthThread
@@ -110,14 +110,14 @@ class InternetCheckSettingCard(ExpandGroupSettingCard):
 
         self.check_internet_retry_times_slider = self.SettingGroupSliderWithText(self.cfg.check_internet_retry_times, self)
         self.add(
-            FBodyLabel("联网失败的重试次数", self),
+            FBodyLabel("联网失败后的探测次数（1 = 不重试）", self),
             self.check_internet_retry_times_slider,
         )
 
         self.check_internet_retry_wait_time_slider = self.SettingGroupSliderWithText(
             self.cfg.check_internet_retry_wait_time, self
         )
-        self.add(FBodyLabel("重试等待时间", self), self.check_internet_retry_wait_time_slider)
+        self.add(FBodyLabel("两次探测之间的等待时间", self), self.check_internet_retry_wait_time_slider)
 
     def __restore_default(self):
         self.check_internet_interval_slider.restore_default_value()
@@ -139,7 +139,7 @@ class InternetCheckSettingCard(ExpandGroupSettingCard):
         self.addGroupWidget(w)
 
 
-class AuthSettingWidget(ScrollArea):
+class AuthSettingWidget(PerfScrollArea):
     def __init__(self, parent=None):
         super().__init__(parent=parent)
         self.scroll_widget = QWidget()

@@ -2,7 +2,9 @@ import threading
 from time import sleep as time_sleep
 from typing import List
 
-from shmtu_auth.src.core.core_exp import check_is_connected
+from shmtu_auth.src.core.core_exp import (
+    check_is_connected_retry as check_is_connected_with_retry,
+)
 from shmtu_auth.src.core.shmtu_auth import ShmtuNetAuth
 from shmtu_auth.src.datatype.shmtu.auth.auth_user import UserItem, get_valid_user_list
 from shmtu_auth.src.gui.common.captcha_bridge import get_captcha_bridge
@@ -55,8 +57,21 @@ class AuthThread(threading.Thread):
         self.captcha_bridge = get_captcha_bridge()
 
     def check_is_connected_retry(self):
-        # Fast probe only: no retry/wait before entering auth flow.
-        return check_is_connected()
+        """探测当前是否已联网。
+
+        按用户在「网络状态监控设置」里配的次数/间隔重试。这两个值一直是
+        「传进来就丢掉」的（``AuthThread`` 存了字段却没人读），所以改设置完全
+        没有效果 —— 现在按字面生效。
+
+        默认次数是 1，也就是**不重试**：探测本身已经是「并发 + DNS 预检 +
+        短超时」的一轮快速判定，多探一遍只会推迟后面的认证。
+        只有确实容易出现瞬时误判的网络环境才需要调大；代价是离线时要等完
+        重试才会开始认证（这是后台线程，不会冻界面）。
+        """
+        return check_is_connected_with_retry(
+            retry_times=self.check_internet_retry_times,
+            wait_time=self.check_internet_retry_wait_time,
+        )
 
     def main_loop(self):
         # 检查状态

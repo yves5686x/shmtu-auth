@@ -28,8 +28,21 @@ class Config(QConfig):
 
     check_internet_interval = RangeConfigItem("Auth", "CheckInternetInterval", 60, RangeValidator(5, 3600))
 
-    check_internet_retry_times = RangeConfigItem("Auth", "CheckInternetRetryTimes", 3, RangeValidator(1, 10))
-    check_internet_retry_wait_time = RangeConfigItem("Auth", "CheckInternetRetryTimes", 30, RangeValidator(1, 600))
+    # 探测「是否联网」时，第一次没探通的额外探测次数与间隔。
+    #
+    # 默认是「只探一次、不重试」：探测本身已经是「并发 + DNS 预检 + 短超时」的
+    # 一轮快速判定，多探一遍只会推迟后面的认证。只有确实容易出现瞬时误判的
+    # 网络环境才需要调大 —— 代价是离线时要等完重试才会开始认证。
+    #
+    # ⚠️ 这两项原先共用同一个键 "CheckInternetRetryTimes"，于是两个滑块读写同
+    # 一个值：拖动其中一个会改掉另一个，而且两个 RangeValidator 的区间还不一样
+    # （1~10 / 1~600），超区间的那一项只能退回默认值。表现就是「拉了一个，
+    # 另一个自己变了」。现在各用各的键，并且都换成新键名 ——
+    # 旧键里那个值本来就是两个滑块互相踩出来的，语义已经不可信，直接不用它。
+    check_internet_retry_times = RangeConfigItem("Auth", "CheckInternetRetryCount", 1, RangeValidator(1, 3))
+    check_internet_retry_wait_time = RangeConfigItem(
+        "Auth", "CheckInternetRetryWaitTime", 3, RangeValidator(1, 600)
+    )
 
     # 高级操作
     # - 导出到Docker
