@@ -4,8 +4,8 @@ import os.path
 import pickle
 from typing import List
 
-from PySide6.QtCore import Qt
-from PySide6.QtWidgets import QFileDialog, QHBoxLayout, QTableWidgetItem, QWidget
+from PySide6.QtCore import Qt, QTimer
+from PySide6.QtWidgets import QApplication, QFileDialog, QHBoxLayout, QTableWidgetItem, QWidget
 from qfluentwidgets import InfoBar, InfoBarIcon, InfoBarPosition, TableWidget
 
 from shmtu_auth.src.config.project_directory import get_directory_data_path
@@ -18,6 +18,15 @@ logger = get_logger()
 
 pickle_log_path = "logs.pickle"
 pickle_log_path = os.path.join(get_directory_data_path(), pickle_log_path)
+
+# 工作日志只保留最近这么多条；超了就丢最老的。
+# 原先条数不设上限，且每来一行日志都要重排两遍列宽 + 把整份记录重新 pickle 落盘，
+# 单行开销随历史线性增长 —— 日志一多界面就明显卡顿，且越用越卡。
+MAX_LOG_RECORDS = 800
+# 超过上限后一次裁到这么多，避免「每多一行就重建整张表」
+LOG_TRIM_TARGET = 600
+# 「重排列宽 + 落盘」的防抖窗口（毫秒）：一段时间内的多行日志合并成一次
+LOG_FLUSH_DELAY_MS = 400
 
 
 class LogInterface(GalleryInterface):
@@ -147,6 +156,10 @@ class LogTableFrame(TableWidget):
     def __init__(self, parent=None):
         super().__init__(parent)
 
+        # 两个都是可变对象，必须是实例属性（写成类属性会让所有实例共享同一份）
+        self.record_list = []
+        self.record_count = 0
+
         self.verticalHeader().hide()
         self.setBorderRadius(8)
         self.setBorderVisible(True)
@@ -167,10 +180,34 @@ class LogTableFrame(TableWidget):
         # 禁止直接编辑
         self.setEditTriggers(TableWidget.EditTrigger.NoEditTriggers)
 
+        # 重排列宽 + 落盘合并到一次（见 __schedule_flush）
+        self._flush_timer = QTimer(self)
+        self._flush_timer.setSingleShot(True)
+        self._flush_timer.setInterval(LOG_FLUSH_DELAY_MS)
+        self._flush_timer.timeout.connect(self.__flush)
+
+        # 退出前把还没落盘的部分写掉
+        app = QApplication.instance()
+        if app is not None:
+            app.aboutToQuit.connect(self.flush)
+
         if os.path.exists(pickle_log_path):
             self.read_status()
 
         signal_bus.signal_log_new.connect(self.add_new_record)
+
+    def __schedule_flush(self):
+        """把「重排列宽 + 落盘」推迟到一小段空闲之后，多行日志只做一次。"""
+        self._flush_timer.start()
+
+    def __flush(self):
+        self.resizeColumnsToContents()
+        self.save_status()
+
+    def flush(self):
+        """立即把待处理的重排与落盘做掉（清空、退出前调用）。"""
+        self._flush_timer.stop()
+        self.__flush()
 
     def add_new_record(self, event: str, status: str):
         now = datetime.datetime.now()
@@ -187,12 +224,24 @@ class LogTableFrame(TableWidget):
         except Exception:
             return
 
-        if self.record_list is not None:
-            self.update_by_list()
+        if self.record_list is None:
+            self.record_list = []
+            return
+
+        # 历史上这份记录没有上限，可能已经攒了几千条 —— 启动时就先裁掉，避免一开机就卡
+        if len(self.record_list) > MAX_LOG_RECORDS:
+            logger.info(f"日志记录过多（{len(self.record_list)} 条），只保留最近 {MAX_LOG_RECORDS} 条")
+            del self.record_list[: len(self.record_list) - MAX_LOG_RECORDS]
+
+        self.update_by_list()
 
     def save_status(self):
-        with open(pickle_log_path, "wb") as f:
-            pickle.dump(self.record_list, f)
+        try:
+            with open(pickle_log_path, "wb") as f:
+                pickle.dump(self.record_list, f)
+        except Exception as e:
+            # 落盘失败不该影响界面（这个调用现在位于定时器回调里）
+            logger.warning(f"保存日志记录失败: {e}")
 
     def update_record(self, index: int, current_record: List[str]):
         for j in range(min(current_record.__len__(), self.column_count)):
@@ -214,24 +263,24 @@ class LogTableFrame(TableWidget):
         self.save_status()
 
     def add_record(self, time: str = "", event: str = "", status: str = ""):
-        self.setRowCount(self.record_count + 1)
+        self.record_list.append([time, event, status])
+        self.record_count = len(self.record_list)
 
-        # 生成结构化数据
-        current_record = [time, event, status]
+        if self.record_count > MAX_LOG_RECORDS:
+            # 一次裁掉一批（而不是每多一行裁一行），否则之后每来一行都要重建整张表
+            del self.record_list[: self.record_count - LOG_TRIM_TARGET]
+            self.record_count = len(self.record_list)
+            logger.info(f"日志超过 {MAX_LOG_RECORDS} 条，已裁到最近 {self.record_count} 条")
+            self.update_by_list()
+            return
 
-        # 添加到记录列表
-        self.record_list.append(current_record)
-        logger.info(f"添加日志记录：{str(current_record)}")
+        # 只追加一行，不做整表重建
+        self.setRowCount(self.record_count)
+        self.update_record(self.record_count - 1, self.record_list[-1])
+        logger.info(f"添加日志记录：{self.record_list[-1]}")
 
-        # 更新UI
-        self.update_record(self.record_count, current_record)
-
-        self.record_count += 1
-
-        self.resizeColumnsToContents()
-        self.save_status()
-
-        self.resizeColumnsToContents()
+        # 重排列宽和落盘都推迟合并执行（原先这里要 resize 两遍 + 把整份记录重写一遍）
+        self.__schedule_flush()
 
     def clear_all_logs(self):
         """清空所有日志记录"""
@@ -244,7 +293,7 @@ class LogTableFrame(TableWidget):
         # 清空表格显示
         self.setRowCount(0)
 
-        # 保存清空后的状态到文件
-        self.save_status()
+        # 清空后立刻落盘，别让之前排队的刷新再写一次
+        self.flush()
 
         logger.info("所有日志记录已清空")
