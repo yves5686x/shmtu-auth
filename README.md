@@ -62,6 +62,15 @@ OCR 识别 → RSA 加密密码 → 提交 → 轮询保持在线。适用于有
 
 ### 方式一：Docker（服务器 / 需要常驻，最省事）
 
+仓库里有**两套** Docker 方案，选一套即可（都支持验证码 OCR）：
+
+| | `docker_headless/`（推荐） | `Docker/` |
+|---|---|---|
+| 跑什么 | 精简独立版，只依赖 `requests` + 标准库 | 主包 CLI（完整依赖） |
+| 日志 | 容器 stdout（`docker compose logs`） | 另外挂到宿主 `./logs` |
+
+下面以 `docker_headless/` 为例：
+
 ```bash
 cd docker_headless
 cp .env.example .env      # 然后编辑 .env，填学号密码
@@ -347,7 +356,7 @@ SHMTU_AUTH_QUERY_STRING = "<那一整串URL>"
 ├── docker_headless/                 # 独立无头版（Docker），不 import 主包
 │   ├── app/                         # 与主包 core/ 部分文件保持逐字节一致（有测试守护）
 │   └── .env.example                 # ← Docker 的唯一配置文件
-├── Docker/                          # 上游的 Docker 构建（挂载 config.toml 跑主包 CLI）
+├── Docker/                          # Docker 方案二：跑主包 CLI（.env 配置，日志挂 ./logs）
 ├── PyTest/                          # 测试套件
 └── Document/                        # VitePress 文档站源码
 ```

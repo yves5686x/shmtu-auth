@@ -1,8 +1,7 @@
-version: "3.8"
-
-# 注意：这是早期的主包镜像部署方式。无头 / 服务器场景推荐用 docker_headless/，
-#       镜像更小（python:3.12-slim + ddddocr），配置项也更新。
-#       配置写法两份完全一致，可直接把 ../docker_headless/.env.example 复制过来改名。
+# 两套 Docker 方案的分工（都支持验证码 OCR，基座都是 debian-slim）：
+#   Docker/          —— 本文件。跑主包 CLI（完整依赖），日志挂到 ./logs
+#   docker_headless/ —— 精简独立版，只依赖 requests + 标准库，镜像更小、变量更少
+# 按需要选一套即可，配置写法两份基本一致。
 services:
   shmtu-auth:
     build:
@@ -16,7 +15,7 @@ services:
     tty: true
     volumes:
       - ./logs:/usr/local/shmtu/shmtu-auth/shmtu_auth/logs
-    # 配置都写在同目录的 .env 里（从 ../docker_headless/.env.example 复制）
+    # 配置都写在同目录的 .env 里（从同目录的 .env.example 复制）
     env_file:
       - .env
     # 日志配置
