@@ -10,7 +10,6 @@ from PySide6.QtGui import (
 from PySide6.QtWidgets import QApplication, QLabel, QVBoxLayout, QWidget
 from qfluentwidgets import (
     FluentIcon,
-    ScrollArea,
     SettingCard,
     SettingCardGroup,
     isDarkTheme,
@@ -25,6 +24,7 @@ from shmtu_auth.src.gui.common.config import (
     HELP_URL,
     REPO_URL,
 )
+from shmtu_auth.src.gui.common.scroll_tuning import PerfScrollArea
 from shmtu_auth.src.gui.common.signal_bus import signal_bus
 from shmtu_auth.src.gui.common.style_sheet import StyleSheet
 from shmtu_auth.src.utils.logs import get_logger
@@ -234,7 +234,7 @@ class QuickStatusCard(SettingCardGroup):
             self.network_card.setContent("需要认证 ⚠")
 
 
-class HomeInterface(ScrollArea):
+class HomeInterface(PerfScrollArea):
     """Home interface"""
 
     def __init__(self, parent=None):

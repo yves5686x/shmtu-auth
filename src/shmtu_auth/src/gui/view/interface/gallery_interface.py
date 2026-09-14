@@ -7,7 +7,6 @@ from qfluentwidgets import (
     FluentIcon,
     IconWidget,
     PushButton,
-    ScrollArea,
     StrongBodyLabel,
     TitleLabel,
     ToolButton,
@@ -17,6 +16,7 @@ from qfluentwidgets import (
 )
 
 from shmtu_auth.src.gui.common.config import FEEDBACK_URL, HELP_URL, REPO_URL
+from shmtu_auth.src.gui.common.scroll_tuning import PerfScrollArea
 from shmtu_auth.src.gui.common.style_sheet import StyleSheet
 from shmtu_auth.src.utils.logs import get_logger
 
@@ -180,7 +180,7 @@ class ExampleCard(QWidget):
         return super().eventFilter(obj, e)
 
 
-class GalleryInterface(ScrollArea):
+class GalleryInterface(PerfScrollArea):
     """Gallery interface"""
 
     def __init__(self, title: str, subtitle: str, parent=None):

@@ -10,7 +10,6 @@ from qfluentwidgets import (
     OptionsSettingCard,
     PrimaryPushSettingCard,
     RangeSettingCard,
-    ScrollArea,
     SettingCardGroup,
     SwitchSettingCard,
     setTheme,
@@ -27,6 +26,7 @@ from shmtu_auth.src.gui.common.config import (
     YEAR,
     cfg,
 )
+from shmtu_auth.src.gui.common.scroll_tuning import PerfScrollArea
 from shmtu_auth.src.gui.common.style_sheet import StyleSheet
 from shmtu_auth.src.gui.software.program_update import check_update_manually
 from shmtu_auth.src.gui.task.check_update import start_check_update_once_thread
@@ -35,7 +35,7 @@ from shmtu_auth.src.utils.logs import get_logger
 logger = get_logger()
 
 
-class SettingInterface(ScrollArea):
+class SettingInterface(PerfScrollArea):
     """Setting interface"""
 
     def __init__(self, parent=None):
