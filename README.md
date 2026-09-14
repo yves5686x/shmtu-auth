@@ -80,10 +80,9 @@ cp .env.example .env      # 然后编辑 .env，填学号密码
 > ⚠️ **必须用 host 网络**（compose 里已配好）。容器要看到宿主机的物理网卡，
 > 否则取不到设备号，也拿不到门户的设备标识。
 >
-> ⚠️ Docker 的配置**不用 `config.toml`**，改 `.env` 即可。注意有**几个变量名跟本地不一样**，
-> 最容易踩的是轮询间隔：本地叫 `SHMTU_AUTH_TIME_INTERVAL`，Docker 叫 `SHMTU_AUTH_CHECK_INTERVAL`，
-> 写混了不报错、只会静默用默认值。完整变量表见
-> [docker_headless/README.md](docker_headless/README.md)。
+> ⚠️ Docker 的配置**不用 `config.toml`**，改 `.env` 即可 —— 两份配置完全独立、互不影响。
+> 变量名已与主包对齐（轮询间隔两边都叫 `SHMTU_AUTH_TIME_INTERVAL`）。
+> 完整变量表见 [docker_headless/README.md](docker_headless/README.md)。
 
 ### 方式二：命令行（pip / 源码）
 

@@ -2,7 +2,7 @@ import logging
 import time
 
 from app.auth_core import HeadlessNetAuth
-from app.config import get_env_bool, get_env_int, mask_user, parse_user_list
+from app.config import get_check_interval, get_env_bool, mask_user, parse_user_list
 
 
 def setup_logging() -> None:
@@ -38,7 +38,7 @@ def main() -> int:
         logging.error("No valid users found in environment variables")
         return 1
 
-    interval = get_env_int("SHMTU_AUTH_CHECK_INTERVAL", 60)
+    interval = get_check_interval()
     run_once_only = get_env_bool("SHMTU_AUTH_RUN_ONCE", False)
 
     logging.info("Loaded %s user(s)", len(users))

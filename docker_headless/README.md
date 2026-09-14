@@ -125,7 +125,7 @@ SHMTU_AUTH_CREDENTIAL_TOKEN=你的令牌
 | `SHMTU_AUTH_CREDENTIAL_CACHE` | 凭据本地缓存路径 | `./data/credentials.json` |
 | `SHMTU_AUTH_CREDENTIAL_INSECURE` | 关闭 TLS 校验（自签名证书时用） | `false` |
 | `SHMTU_AUTH_DEVICE_MAC` | 手动指定设备号（物理 MAC） | 自动探测 |
-| `SHMTU_AUTH_CHECK_INTERVAL` | 轮询间隔秒数 | `60` |
+| `SHMTU_AUTH_TIME_INTERVAL` | 轮询间隔秒数（与主包同名；旧名 `SHMTU_AUTH_CHECK_INTERVAL` 仍兼容） | `60` |
 | `SHMTU_AUTH_RUN_ONCE` | 只执行一次检查 | `false` |
 | `SHMTU_AUTH_PROBE_URL` | 自定义探测URL | `http://1.1.1.1` |
 | `SHMTU_AUTH_QUERY_STRING` | 手动指定 queryString（完整认证页URL 或裸串），配了就跳过自动探测 | 自动探测 |

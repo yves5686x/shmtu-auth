@@ -548,3 +548,43 @@ def test_login_api_honours_env_override(monkeypatch):
 
         assert auth.portal_base == "https://example.test/eportal/"
         assert auth.login_api == "https://example.test/eportal/InterFace.do?method="
+
+
+class TestCheckIntervalCompatibility:
+    """轮询间隔的变量名兼容性。
+
+    Docker 历史上这个配置叫 ``SHMTU_AUTH_CHECK_INTERVAL``，主包侧叫
+    ``SHMTU_AUTH_TIME_INTERVAL``（同一个含义、两个名字，写混了不报错）。
+    现在两边统一成后者，但**旧名必须继续认** —— 用户的 .env 里写的是旧名，
+    若只认新名，不会报任何错、只会静默按默认值跑，属于最难排查的那类问题。
+    """
+
+    @staticmethod
+    def _interval(monkeypatch, **env):
+        for key in ("SHMTU_AUTH_TIME_INTERVAL", "SHMTU_AUTH_CHECK_INTERVAL"):
+            monkeypatch.delenv(key, raising=False)
+        for key, value in env.items():
+            monkeypatch.setenv(key, value)
+        with docker_app():
+            from app.config import get_check_interval
+
+            return get_check_interval()
+
+    def test_new_name(self, monkeypatch):
+        assert self._interval(monkeypatch, SHMTU_AUTH_TIME_INTERVAL="30") == 30
+
+    def test_legacy_name_still_works(self, monkeypatch):
+        assert self._interval(monkeypatch, SHMTU_AUTH_CHECK_INTERVAL="45") == 45
+
+    def test_default_is_60(self, monkeypatch):
+        assert self._interval(monkeypatch) == 60
+
+    def test_new_name_wins_when_both_set(self, monkeypatch):
+        assert (
+            self._interval(
+                monkeypatch,
+                SHMTU_AUTH_TIME_INTERVAL="10",
+                SHMTU_AUTH_CHECK_INTERVAL="99",
+            )
+            == 10
+        )

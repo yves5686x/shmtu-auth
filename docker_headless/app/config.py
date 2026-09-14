@@ -32,6 +32,22 @@ def get_env_bool(name: str, default: bool = False) -> bool:
     return value.lower() in {"1", "true", "yes", "on"}
 
 
+DEFAULT_CHECK_INTERVAL = 60
+
+
+def get_check_interval() -> int:
+    """轮询间隔（秒）。
+
+    主包侧这个配置叫 ``SHMTU_AUTH_TIME_INTERVAL``，Docker 历史上叫
+    ``SHMTU_AUTH_CHECK_INTERVAL``。两个名字都认、优先新的那个，
+    这样改名不会让老的 .env 静默失效（名字写错不报错，只会用默认值）。
+    """
+    for name in ("SHMTU_AUTH_TIME_INTERVAL", "SHMTU_AUTH_CHECK_INTERVAL"):
+        if get_env_str(name, ""):
+            return get_env_int(name, DEFAULT_CHECK_INTERVAL)
+    return DEFAULT_CHECK_INTERVAL
+
+
 def resolve_device_mac() -> str:
     """本机物理网卡 MAC（设备号）。
 
