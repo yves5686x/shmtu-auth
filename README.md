@@ -114,6 +114,31 @@ chmod +x start.sh
 ./start.sh
 ```
 
+## 认证流程
+
+程序做的事和浏览器点「登录」完全一致，只是全程脚本化（2026-09 门户改版后的现状）：
+
+```
+① 探测 http 明文请求 → 被网关劫持到认证页，取出 queryString（含 mac）
+② GET  index.jsp?<原始形态 queryString>      建立会话（绑定 wlanuserip / mac）
+③ POST InterFace.do?method=pageInfo         取验证码地址 + RSA 公钥
+④ GET  InterFace.do?method=getServices      绑定本会话可用服务
+⑤ GET  validcode?rnd=…  → 识别 4 位数字      用 ddddocr；失败换新图重试
+⑥ POST InterFace.do?method=login            带验证码 + RSA 密文密码
+```
+
+几个必须知道的点：
+
+* **`mac` 由网关下发**：程序只把 queryString 原样透传，不读网卡 MAC、也不缓存上次的值
+* **密码密文的明文是 `reverse(密码 + ">" + mac)`**，与门户 JS 逐字节一致
+* **`service` 两个候选都试**（有线 `校园网` / 无线 `iSMU`），不按运行环境猜；
+  可用 `SHMTU_AUTH_PORTAL_SERVICE` 显式指定
+* 验证码**一次性**，失败自动换新图重试（`SHMTU_AUTH_CAPTCHA_MAX_RETRY`，默认 6 次）
+* 认证状态由轮询监控（`SHMTU_AUTH_TIME_INTERVAL`，默认 10 秒）
+
+> 三条入口都已可用：主 CLI（`python start_cli.py`）、GUI、Docker。
+> 想单独验证账号密码能不能过，用根目录的 `python test_auth_cli.py`。
+
 ## 配置
 
 **本地运行只有一个地方要改：`src/shmtu_auth/config/config.toml`。**
