@@ -3,6 +3,7 @@ from PySide6.QtGui import QDesktopServices
 from PySide6.QtWidgets import QFrame, QHBoxLayout, QLabel, QVBoxLayout, QWidget
 from qfluentwidgets import FluentIcon, IconWidget, SingleDirectionScrollArea, TextWrap
 
+from shmtu_auth.src.gui.common.icon_cache import scaled_icon
 from shmtu_auth.src.gui.common.style_sheet import StyleSheet
 
 
@@ -11,7 +12,8 @@ class LinkCard(QFrame):
         super().__init__(parent=parent)
         self.url = QUrl(url)
         self.setFixedSize(198, 220)
-        self.iconWidget = IconWidget(icon, self)
+        # 同 SampleCard：大图资源先按显示尺寸缩好，避免每帧重缩放
+        self.iconWidget = IconWidget(scaled_icon(icon, 54), self)
         self.titleLabel = QLabel(title, self)
         self.contentLabel = QLabel(TextWrap.wrap(content, 28, False)[0], self)
         self.urlWidget = IconWidget(FluentIcon.LINK, self)

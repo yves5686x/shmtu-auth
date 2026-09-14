@@ -93,8 +93,10 @@ class NetworkTestManager:
         Returns:
             bool: 如果成功启动测试返回True，如果已有测试在进行返回False
         """
-        # 如果已有测试在进行，不重复启动
-        if self._tester and self._tester.is_running_test():
+        # 如果已有测试在进行（含正在收尾的），不重复启动。
+        # 注意要连 isRunning() 一起判断：is_running_test() 在 run() 的 finally 里就
+        # 置 False 了，此时线程可能还没真正退出。
+        if self._tester and (self._tester.is_running_test() or self._tester.isRunning()):
             logger.warning("NetworkTestManager: 测试已在进行中，跳过新的测试请求")
             return False
 
@@ -142,17 +144,31 @@ class NetworkTestManager:
         return self._tester and self._tester.is_running_test()
 
     def cleanup(self):
-        """清理资源"""
+        """清理资源（程序退出时调用，允许短暂等待线程结束）"""
         logger.debug("NetworkTestManager: 清理资源...")
-        self._cleanup_tester()
+        self._cleanup_tester(wait_ms=1000, force=True)
 
-    def _cleanup_tester(self):
-        """清理测试器"""
-        if self._tester:
-            if self._tester.isRunning():
-                self._tester.stop_test()
-                if not self._tester.wait(3000):  # 等待3秒
-                    logger.warning("NetworkTestManager: 测试线程未能正常停止，强制终止")
-                    self._tester.terminate()
-                    self._tester.wait()
-            self._tester = None
+    def _cleanup_tester(self, wait_ms: int = 0, force: bool = False):
+        """回收上一次的测试线程。
+
+        默认**不等待**：这里是界面线程，原先的 ``wait(3000)`` 会让界面直接卡住 3 秒，
+        而 ``terminate()`` 又会破坏线程内部状态。仍在线程收尾时保留引用即可 ——
+        把运行中的 QThread 交给 GC 会让进程崩掉。
+
+        ``force=True`` 只用于程序退出：此时短暂等待后强制终止是可以接受的。
+        """
+        tester = self._tester
+        if tester is None:
+            return
+
+        if tester.isRunning():
+            tester.stop_test()
+            if not force:
+                logger.debug("NetworkTestManager: 上一次测试仍在收尾，保留引用，不阻塞界面")
+                return
+            if not tester.wait(wait_ms):
+                logger.warning("NetworkTestManager: 测试线程未能正常停止，强制终止")
+                tester.terminate()
+                tester.wait()
+
+        self._tester = None

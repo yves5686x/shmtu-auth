@@ -71,6 +71,11 @@ class MainWindow(FluentWindow):
         # 处理认证服务自动启动（在所有界面初始化完成后）
         self.__handle_auth_auto_start()
 
+        # 界面全部就绪后再安排首次网络状态探测。
+        # 原先这一步在 SystemTray.__init__ 里发起，而 SystemTray 比 6 个页面创建得还早，
+        # 于是「探测网络」和「构建界面」挤在同一时刻（用户感受就是启动时卡）。
+        self.system_tray.start_initial_network_probe()
+
     def __handle_auth_auto_start(self):
         """处理认证服务自动启动"""
         if cfg.auth_auto_start_work_thread.value:
@@ -133,7 +138,9 @@ class MainWindow(FluentWindow):
                 if self.auth_interface.work_thread.is_alive():
                     logger.info("停止认证线程...")
                     self.auth_interface.work_thread.stop()
-                    self.auth_interface.work_thread.join(timeout=3)
+                    # 窗口关闭时不能再等太久（原先 3 秒，用户视角是「点了关闭没反应」）。
+                    # 线程若还没退出，会在进程退出阶段自己收尾。
+                    self.auth_interface.work_thread.join(timeout=1.0)
                     logger.info("认证线程已停止")
 
             # 清理认证接口（包括网络测试管理器）

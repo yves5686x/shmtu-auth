@@ -4,6 +4,7 @@ from PySide6.QtWidgets import QHBoxLayout, QLabel, QVBoxLayout, QWidget
 from qfluentwidgets import CardWidget, FlowLayout, IconWidget, TextWrap
 
 # from shmtu_auth.src.common.signal_bus import signalBus
+from shmtu_auth.src.gui.common.icon_cache import scaled_icon
 from shmtu_auth.src.gui.common.style_sheet import StyleSheet
 
 
@@ -17,7 +18,9 @@ class SampleCard(CardWidget):
 
         self.url = url.strip()
 
-        self.iconWidget = IconWidget(icon, self)
+        # 图标源图可能是 2000x1992 级别的大图，而这里只显示 48x48。
+        # 直接交给 IconWidget 会导致每帧重新做一次平滑缩放（见 icon_cache 模块说明）。
+        self.iconWidget = IconWidget(scaled_icon(icon, 48), self)
         self.titleLabel = QLabel(title, self)
         self.contentLabel = QLabel(TextWrap.wrap(content, 45, False)[0], self)
 

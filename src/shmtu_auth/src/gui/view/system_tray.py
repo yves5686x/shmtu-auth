@@ -26,10 +26,19 @@ from qfluentwidgets import Action, SystemTrayMenu
 from qfluentwidgets import FluentIcon as FIF
 
 from shmtu_auth.src.gui.common.config import cfg
+from shmtu_auth.src.gui.common.signal_bus import auth_status_changed
 from shmtu_auth.src.gui.utils.async_network_test import NetworkTestManager
 from shmtu_auth.src.utils.logs import get_logger
 
 logger = get_logger()
+
+
+# qfluentwidgets 的不同版本里「断开」这个图标的枚举名不一致：
+# 老版本有 FluentIcon.DISCONNECT，现在这版只剩 CONNECT。
+# 直接写 FIF.DISCONNECT，在缺这个枚举的版本上会抛 AttributeError——而这个调用点在
+# 「网络未连接」分支里，也就是未认证校园网的常态，于是每次刷新状态都会在信号槽里
+# 抛异常：文案更新了，后面的图标/托盘提示更新全部中断（堆栈还会刷日志）。
+DISCONNECTED_ICON = getattr(FIF, "DISCONNECT", None) or getattr(FIF, "CONNECT", None) or FIF.WIFI
 
 
 class SystemTray:
@@ -330,8 +339,19 @@ class SystemTray:
         logger.debug(f"托盘菜单创建完成，认证状态Action ID: {id(self._auth_status_action)}")
         logger.debug(f"网络状态Action ID: {id(self._network_status_action)}")
 
-        # 初始化网络状态（异步）
-        self.__update_network_status_async()
+        # 这里**不再**直接发起网络探测。
+        # SystemTray 是在 MainWindow.__init_window() 里创建的，比那 6 个页面还早；
+        # 原先在这发起探测，于是「探测网络」和「构建界面」挤在同一时刻，启动时发紧。
+        # 现在由 MainWindow 在界面全部就绪后调用 start_initial_network_probe()。
+
+    def start_initial_network_probe(self, delay_ms: int = 500):
+        """把启动时的第一次网络探测推迟到界面构建完成之后。
+
+        由 MainWindow 在全部界面创建完毕后再调用，延迟一小段时间让首帧先画出来，
+        避免探测线程和界面构建抢时间片。
+        """
+        logger.info(f"安排启动后的首次网络状态探测（延迟 {delay_ms} ms）")
+        QTimer.singleShot(delay_ms, self.__update_network_status_async)
 
     def __quick_network_test(self):
         """快速网络测试（异步版本）"""
@@ -380,6 +400,9 @@ class SystemTray:
 
         # 更新网络状态显示
         self.update_network_status_only(is_connected)
+
+        # 广播出去，主页状态卡 / 认证页状态卡跟着一致
+        auth_status_changed(is_connected)
 
         # 显示结果通知
         if is_connected:
@@ -485,33 +508,6 @@ class SystemTray:
         self.update_auth_status(is_running=None, is_online=False)
         logger.info("托盘状态测试完成")
 
-    def __update_network_status(self):
-        """更新网络状态显示"""
-        try:
-            from shmtu_auth.src.core.core_exp import check_is_connected
-
-            logger.debug("检查网络连接状态...")
-            is_connected = check_is_connected()
-
-            if self._network_status_action is None:
-                logger.warning("网络状态Action未创建，无法更新状态")
-                return
-
-            if is_connected:
-                self._network_status_action.setText("网络状态: 已连接 ✓")
-                self._network_status_action.setIcon(FIF.WIFI)
-                logger.debug("网络状态已更新为: 已连接")
-            else:
-                self._network_status_action.setText("网络状态: 未连接 ✗")
-                self._network_status_action.setIcon(FIF.DISCONNECT)
-                logger.debug("网络状态已更新为: 未连接")
-
-        except Exception as e:
-            logger.error(f"更新网络状态失败: {str(e)}")
-            if self._network_status_action:
-                self._network_status_action.setText("网络状态: 检查失败 ⚠")
-                self._network_status_action.setIcon(FIF.LABEL)
-
     def update_network_status_only(self, is_online: bool):
         """仅更新网络状态显示（不影响认证状态）"""
         logger.debug(f"更新网络状态: is_online={is_online}")
@@ -526,7 +522,7 @@ class SystemTray:
             logger.debug("网络状态已更新为: 已连接")
         else:
             self._network_status_action.setText("网络状态: 未连接 ✗")
-            self._network_status_action.setIcon(FIF.DISCONNECT)
+            self._network_status_action.setIcon(DISCONNECTED_ICON)
             logger.debug("网络状态已更新为: 未连接")
 
     def refresh_network_status(self):
@@ -556,13 +552,17 @@ class SystemTray:
             logger.warning("网络状态Action未创建，无法更新状态")
             return
 
+        # 结果同时广播到信号总线：主页「网络状态」卡、认证页状态卡都由它驱动。
+        # 之前只有托盘自己知道结果，那两处只能停在初始文案上。
+        auth_status_changed(is_connected)
+
         if is_connected:
             self._network_status_action.setText("网络状态: 已连接 ✓")
             self._network_status_action.setIcon(FIF.WIFI)
             logger.debug("网络状态已更新为: 已连接")
         else:
             self._network_status_action.setText("网络状态: 未连接 ✗")
-            self._network_status_action.setIcon(FIF.DISCONNECT)
+            self._network_status_action.setIcon(DISCONNECTED_ICON)
             logger.debug("网络状态已更新为: 未连接")
 
     def __on_network_status_check_error(self, error_msg: str):

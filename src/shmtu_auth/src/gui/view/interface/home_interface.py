@@ -7,7 +7,7 @@ from PySide6.QtGui import (
     QPainterPath,
     QPixmap,
 )
-from PySide6.QtWidgets import QLabel, QVBoxLayout, QWidget
+from PySide6.QtWidgets import QApplication, QLabel, QVBoxLayout, QWidget
 from qfluentwidgets import (
     FluentIcon,
     ScrollArea,
@@ -45,8 +45,14 @@ class BannerWidget(QWidget):
         self.galleryLabel.setFont(font_confg.title_font)
         self.galleryLabel.setObjectName("galleryLabel")
 
-        self.banner: QPixmap = QPixmap(":/shmtu/banner1")
+        self.banner: QPixmap = self.__load_banner()
         self.linkCardView = LinkCardView(self)
+
+        # 整块背景（图片 + 渐变）合成后的缓存。paintEvent 会被频繁触发（滚动、切页动画、
+        # 缩放窗口、HiDPI 屏重绘），原先每帧都要重新做平滑缩放 + 裁剪 + 铺一层渐变，
+        # 掉帧很明显。现在只在尺寸变化时重算一次，paintEvent 只剩一次贴图。
+        self._cache_size = QSize()
+        self._cache_pixmap = None
 
         self.vBoxLayout.setSpacing(0)
         self.vBoxLayout.setContentsMargins(0, 20, 0, 0)
@@ -77,72 +83,87 @@ class BannerWidget(QWidget):
             FEEDBACK_URL,
         )
 
-    def paintEvent(self, e):
-        super().paintEvent(e)
+    @staticmethod
+    def __load_banner() -> QPixmap:
+        """加载 banner 原图，并按屏幕可能需要的大小预先缩小一次。
 
-        painter = QPainter(self)
-        painter.setRenderHints(QPainter.SmoothPixmapTransform | QPainter.Antialiasing)
-        painter.setPen(Qt.NoPen)
+        资源里的原图是 3986x1329（2.5 MB，解出来约 21 MB 位图），而 banner 高度
+        固定 336 —— 每次窗口尺寸变化都要从这张原图做一次平滑缩放，拖动窗口/切页时
+        会明显掉帧。开机先按「屏幕实际需要的最大宽度」缩一次，后续缩放的成本就降下来了。
+        """
+        pixmap = QPixmap(":/shmtu/banner1")
+        if pixmap.isNull():
+            logger.warning("banner 资源加载失败，主页将只显示渐变背景")
+            return pixmap
 
-        path = QPainterPath()
-        path.setFillRule(Qt.WindingFill)
+        # 至少留 2400，再按屏幕的物理宽度放宽（兼顾 HiDPI 与超宽屏）
+        limit = 2400
+        screen = QApplication.primaryScreen()
+        if screen is not None:
+            screen_width = int(screen.geometry().width() * screen.devicePixelRatio())
+            limit = max(limit, screen_width)
+
+        if pixmap.width() > limit:
+            pixmap = pixmap.scaledToWidth(limit, Qt.TransformationMode.SmoothTransformation)
+
+        return pixmap
+
+    def __rebuild_cache(self):
+        """按当前尺寸重建整块背景（图片 + 渐变）的缓存。"""
         w, h = self.width(), self.height()
+        if w <= 0 or h <= 0:
+            self._cache_size = QSize(w, h)
+            self._cache_pixmap = None
+            return
+
+        ratio = self.devicePixelRatioF() or 1.0
+
+        # 按设备像素渲染，HiDPI 屏下不会糊
+        pixmap = QPixmap(int(w * ratio), int(h * ratio))
+        pixmap.setDevicePixelRatio(ratio)
+        pixmap.fill(Qt.GlobalColor.transparent)
+
+        painter = QPainter(pixmap)
+        painter.setRenderHints(QPainter.RenderHint.SmoothPixmapTransform | QPainter.RenderHint.Antialiasing)
+        painter.setPen(Qt.PenStyle.NoPen)
+
+        # 圆角路径（沿用原有画法；simplified() 之后实际是整块矩形）
+        path = QPainterPath()
+        path.setFillRule(Qt.FillRule.WindingFill)
         path.addRoundedRect(QRectF(0, 0, w, h), 10, 10)
         path.addRect(QRectF(0, h - 50, 50, 50))
         path.addRect(QRectF(w - 50, 0, 50, 50))
         path.addRect(QRectF(w - 50, h - 50, 50, 50))
         path = path.simplified()
 
-        # 绘图逻辑
-        # pixmap = self.banner.scaled(
-        #     self.size(), Qt.KeepAspectRatio, Qt.SmoothTransformation)
-        # painter.fillPath(path, QBrush(pixmap))
+        # 图片：等比放大到「盖满」当前尺寸，再垂直居中裁剪
+        origin_width = self.banner.width()
+        origin_height = self.banner.height()
+        if origin_width > 0 and origin_height > 0:
+            wh_ratio = origin_width / origin_height
 
-        # painter.drawPixmap(self.rect(), pixmap)
+            width_new = h * wh_ratio
+            height_new = h
+            if width_new < w:
+                width_new = w
+                height_new = width_new / wh_ratio
 
-        width_origin = self.banner.width()
-        height_origin = self.banner.height()
-        wh_ratio = width_origin / height_origin
+            scaled_pixmap = self.banner.scaled(
+                QSize(int(width_new * ratio), int(height_new * ratio)),
+                Qt.AspectRatioMode.IgnoreAspectRatio,
+                Qt.TransformationMode.SmoothTransformation,
+            )
 
-        width_target = self.width()
-        height_target = self.height()
+            crop_y = (scaled_pixmap.height() - int(h * ratio)) / 2
+            croped_pixmap = scaled_pixmap.copy(
+                0, int(max(crop_y, 0)), int(w * ratio), int(h * ratio)
+            )
+            croped_pixmap.setDevicePixelRatio(ratio)
 
-        height_new = height_target
-        width_new = height_new * wh_ratio
-        if width_new < width_target:
-            width_new = width_target
-            height_new = width_new / wh_ratio
+            painter.drawPixmap(QRectF(0, 0, w, h), croped_pixmap, QRectF(0, 0, w, h))
 
-        scaled_pixmap = self.banner.scaled(
-            QSize(width_new, height_new),
-            Qt.AspectRatioMode.IgnoreAspectRatio,
-            Qt.TransformationMode.SmoothTransformation,
-        )
-
-        # 计算裁剪坐标(水平全部，垂直是中心部分)
-        crop_x = 0
-        crop_y = (height_new - height_target) / 2
-        crop_width = width_target
-        crop_height = height_target
-
-        # 裁剪图片
-        croped_pixmap = scaled_pixmap.copy(int(crop_x), int(crop_y), int(crop_width), int(crop_height))
-
-        # print(width_target, height_target)
-        # print(croped_pixmap.width(), croped_pixmap.height())
-        # print()
-
-        # 在路径内部绘制缩放并裁剪后的图像
-        painter.drawPixmap(
-            path.boundingRect(),
-            croped_pixmap,
-            QRectF(0, 0, width_target, height_target),
-        )
-
-        # init linear gradient effect
+        # 渐变遮罩
         gradient = QLinearGradient(0, 0, 0, h)
-
-        # draw background color
         if not isDarkTheme():
             gradient.setColorAt(0, QColor(207, 216, 228, 255))
             gradient.setColorAt(1, QColor(207, 216, 228, 0))
@@ -151,6 +172,24 @@ class BannerWidget(QWidget):
             gradient.setColorAt(1, QColor(0, 0, 0, 0))
 
         painter.fillPath(path, QBrush(gradient))
+        painter.end()
+
+        self._cache_size = QSize(w, h)
+        self._cache_pixmap = pixmap
+
+    def paintEvent(self, e):
+        super().paintEvent(e)
+
+        w, h = self.width(), self.height()
+        if self._cache_pixmap is None or self._cache_size != QSize(w, h):
+            self.__rebuild_cache()
+
+        if self._cache_pixmap is None:
+            return
+
+        # 每帧只有这一张贴图（尺寸比对命中缓存时不会再做任何缩放/渐变）
+        painter = QPainter(self)
+        painter.drawPixmap(0, 0, self._cache_pixmap)
 
 
 class QuickStatusCard(SettingCardGroup):
@@ -160,7 +199,7 @@ class QuickStatusCard(SettingCardGroup):
         super().__init__("系统状态概览", parent)
 
         # 网络状态卡
-        self.network_card = SettingCard(FluentIcon.WIFI, "网络状态", "检查中...")
+        self.network_card = SettingCard(FluentIcon.WIFI, "网络状态", self.__initial_network_tip())
         self.addSettingCard(self.network_card)
 
         # 服务状态卡
@@ -171,6 +210,21 @@ class QuickStatusCard(SettingCardGroup):
         signal_bus.signal_auth_status_changed.connect(self.update_network_status)
         signal_bus.signal_auth_thread_started.connect(lambda: self.service_card.setContent("运行中 ✓"))
         signal_bus.signal_auth_thread_stopped.connect(lambda: self.service_card.setContent("已停止 ✗"))
+
+    @staticmethod
+    def __initial_network_tip() -> str:
+        """先用上次记录的结论占位，不要一直挂在「检查中...」。
+
+        真正的探测结果要等界面构建完、事件循环跑起来之后才回来（见 MainWindow 里
+        对 SystemTray.start_initial_network_probe 的调用）。原先这里写死
+        「检查中...」，而这张卡片只在收到状态信号时才更新 —— 没开认证服务时
+        根本没人发信号，于是它会永远停在「检查中...」，看着像界面卡住了。
+        """
+        from shmtu_auth.src.gui.common.config import cfg
+
+        if cfg.last_network_status.value:
+            return "已连接 ✓"
+        return "需要认证 ⚠"
 
     def update_network_status(self, is_online: bool):
         """更新网络状态"""
