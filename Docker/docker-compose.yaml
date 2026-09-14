@@ -1,7 +1,3 @@
-# 两套 Docker 方案的分工（都支持验证码 OCR，基座都是 debian-slim）：
-#   Docker/          —— 本文件。跑主包 CLI（完整依赖），日志挂到 ./logs
-#   docker_headless/ —— 精简独立版，只依赖 requests + 标准库，镜像更小、变量更少
-# 按需要选一套即可，配置写法两份基本一致。
 services:
   shmtu-auth:
     build:
@@ -12,9 +8,9 @@ services:
     restart: unless-stopped
     # 需要 host 网络才能看到宿主的物理网卡（设备号），门户认证的设备标识才自洽
     network_mode: host
-    tty: true
     volumes:
-      - ./logs:/usr/local/shmtu/shmtu-auth/shmtu_auth/logs
+      - ./logs:/app/logs
+      - ./data:/app/data
     # 配置都写在同目录的 .env 里（从同目录的 .env.example 复制）
     env_file:
       - .env

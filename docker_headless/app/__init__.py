@@ -1,1 +1,0 @@
-"""Headless SHMTU auth package."""

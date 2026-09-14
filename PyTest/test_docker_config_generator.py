@@ -77,8 +77,8 @@ def test_generated_env_contains_expected_variables(tmp_path):
     content = (tmp_path / "machine_1" / ".env").read_text(encoding="utf-8")
 
     assert "SHMTU_AUTH_USER_LIST=202500000001;202500000002" in content
-    assert "SHMTU_AUTH_USER_PWD_202500000001=pwd-1" in content
-    assert "SHMTU_AUTH_USER_PWD_202500000002=pwd-2" in content
+    assert "SHMTU_AUTH_USER_PWD_202500000001='pwd-1'" in content
+    assert "SHMTU_AUTH_USER_PWD_202500000002='pwd-2'" in content
     assert "SHMTU_MACHINE_NAME=machine_1" in content
     assert "SHMTU_AUTH_TIME_INTERVAL=" in content
 
@@ -93,7 +93,7 @@ def test_generated_env_variables_are_actually_read_by_docker_backend(tmp_path):
     assert repo_root, "找不到仓库根目录，测试环境异常"
 
     backend_src = ""
-    for path in pathlib.Path(repo_root, "docker_headless", "app").rglob("*.py"):
+    for path in pathlib.Path(repo_root, "src", "shmtu_auth").rglob("*.py"):
         backend_src += path.read_text(encoding="utf-8")
 
     generate_machine_configs(

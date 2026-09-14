@@ -62,36 +62,21 @@ OCR 识别 → RSA 加密密码 → 提交 → 轮询保持在线。适用于有
 
 ### 方式一：Docker（服务器 / 需要常驻，最省事）
 
-仓库里有**两套** Docker 方案，选一套即可（都支持验证码 OCR）：
-
-| | `docker_headless/`（推荐） | `Docker/` |
-|---|---|---|
-| 跑什么 | 精简独立版，只依赖 `requests` + 标准库 | 主包 CLI（完整依赖） |
-| 日志 | 容器 stdout（`docker compose logs`） | 另外挂到宿主 `./logs` |
-
-下面以 `docker_headless/` 为例：
+Docker 使用主包 CLI，与 GUI 共用认证核心，包含验证码 OCR。
 
 ```bash
-cd docker_headless
-cp .env.example .env      # 然后编辑 .env，填学号密码
-./start.sh start          # Windows: .\start.ps1 start
+cd Docker
+cp .env.example .env      # 编辑 .env，填学号密码
+docker compose up -d --build
+docker compose logs -f
+docker compose ps
+docker compose down
 ```
 
-`start.sh` / `start.ps1` 封装了 `docker compose` 的常用操作：
-
-```bash
-./start.sh start     # 构建并后台启动
-./start.sh logs      # 跟日志
-./start.sh status    # 看状态
-./start.sh stop      # 停止
-```
-
-> ⚠️ **必须用 host 网络**（compose 里已配好）。容器要看到宿主机的物理网卡，
-> 否则取不到设备号，也拿不到门户的设备标识。
->
-> ⚠️ Docker 的配置**不用 `config.toml`**，改 `.env` 即可 —— 两份配置完全独立、互不影响。
-> 变量名已与主包对齐（轮询间隔两边都叫 `SHMTU_AUTH_TIME_INTERVAL`）。
-> 完整变量表见 [docker_headless/README.md](docker_headless/README.md)。
+账号和运行参数见 [Docker/.env.example](Docker/.env.example)。密码应使用单引号包裹，
+避免 `$`、`#` 被 Compose 解释；GUI 导出的配置会自动处理。
+日志保存到 `./logs`，凭据缓存保存到 `./data`。Docker 使用 `.env`，不需要复制 TOML 模板。
+GUI 生成多机配置后，请确认每台服务器上的 `build.context` 指向该服务器的源码仓库。
 
 ### 方式二：命令行（pip / 源码）
 
@@ -353,18 +338,10 @@ SHMTU_AUTH_QUERY_STRING = "<那一整串URL>"
 │       ├── gui/                     # GUI（PySide6 + QFluentWidgets）
 │       ├── monitor/                 # 轮询与状态监测
 │       └── utils/                   # 日志、环境变量、配置读取
-├── docker_headless/                 # 独立无头版（Docker），不 import 主包
-│   ├── app/                         # 与主包 core/ 部分文件保持逐字节一致（有测试守护）
-│   └── .env.example                 # ← Docker 的唯一配置文件
-├── Docker/                          # Docker 方案二：跑主包 CLI（.env 配置，日志挂 ./logs）
+├── Docker/                          # 主包 CLI 镜像，.env 配置，日志挂 ./logs
 ├── PyTest/                          # 测试套件
 └── Document/                        # VitePress 文档站源码
 ```
-
-> `docker_headless/` 是**独立副本**，只依赖 `urllib3<2` + `requests` + 标准库，
-> 不 import 主包。其中 `portal_crypto.py` / `device_id.py` / `credential_provider.py`
-> 与主包同名文件保持**逐字节一致**，由 `PyTest/test_portal_crypto_parity.py` 等守护；
-> 改动任一份时两份都要同步。
 
 ## 开发指南
 

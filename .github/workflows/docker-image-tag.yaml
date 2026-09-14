@@ -86,7 +86,7 @@ jobs:
               echo "push=false" >>$GITHUB_OUTPUT
             ;;
             refs/tags/*)
-              echo "version=$(echo${{ github.ref }} | sed -E 's|refs/tags/||')" >> $GITHUB_OUTPUT
+              echo "version=$(echo ${{ github.ref }} | sed -E 's|refs/tags/||')" >> $GITHUB_OUTPUT
               echo "push=true" >> $GITHUB_OUTPUT
             ;;
             *)
@@ -108,12 +108,7 @@ jobs:
           file: Docker/Dockerfile
           platforms:
             linux/amd64,
-            linux/arm64,
-            linux/386,
-            linux/arm/v7,
-            linux/arm/v6,
-            linux/ppc64le,
-            linux/s390x
+            linux/arm64
           push: ${{ steps.prepare_tag.outputs.push }}
           tags: |
             ${{ github.repository }}:${{ steps.prepare_tag.outputs.version }},

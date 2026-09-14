@@ -1,7 +1,0 @@
-urllib3<2
-requests
-
-# 门户已强制要求图形验证码，无头环境无法弹窗，因此 OCR 是必需依赖。
-# ddddocr 对本门户的「4 位橙色数字」验证码识别率很高；
-# 它依赖 onnxruntime / opencv-python-headless，Dockerfile 已装好所需系统库。
-ddddocr

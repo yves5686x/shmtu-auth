@@ -5,15 +5,15 @@ from shmtu_auth.src.config.config_global import env_from_global
 from shmtu_auth.src.config.config_toml import env_from_toml
 
 
-def get_env_str(key, default=None):
+def get_env_str(key, default=None, *, strip=True):
     if key in env_from_global:
-        return str(env_from_global[key]).strip()
+        return str(env_from_global[key]).strip() if strip else str(env_from_global[key])
 
     if key in env_from_toml:
-        return str(env_from_toml[key]).strip()
+        return str(env_from_toml[key]).strip() if strip else str(env_from_toml[key])
 
     if key in os.environ:
-        return str(os.environ[key]).strip()
+        return str(os.environ[key]).strip() if strip else str(os.environ[key])
     return default
 
 

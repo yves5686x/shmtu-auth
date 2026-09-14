@@ -4,12 +4,7 @@
 （pytest.ini 只匹配 ``test_*.py`` 和 ``*_test.py``）。
 """
 
-import contextlib
-import sys
-from pathlib import Path
 
-REPO_ROOT = Path(__file__).resolve().parent.parent
-DOCKER_HEADLESS = REPO_ROOT / "docker_headless"
 
 
 class FakeResponse:
@@ -61,27 +56,3 @@ class FakeSession:
         self.requests_sent.append(("POST", url))
         self.kwargs_sent.append(kwargs)
         return self._pick(url)
-
-
-@contextlib.contextmanager
-def docker_app():
-    """把 docker_headless 当作 ``app`` 包临时导入，退出时完全还原 sys.modules。"""
-    saved_path = list(sys.path)
-    saved_modules = {k: v for k, v in sys.modules.items() if k == "app" or k.startswith("app.")}
-    for key in list(saved_modules):
-        del sys.modules[key]
-
-    sys.path.insert(0, str(DOCKER_HEADLESS))
-    try:
-        import app.auth_core as auth_core
-        import app.captcha_solver as captcha_solver
-        import app.eportal_protocol as eportal_protocol
-        import app.portal_crypto as portal_crypto
-
-        yield eportal_protocol, auth_core, captcha_solver, portal_crypto
-    finally:
-        for key in list(sys.modules):
-            if key == "app" or key.startswith("app."):
-                del sys.modules[key]
-        sys.modules.update(saved_modules)
-        sys.path[:] = saved_path

@@ -20,12 +20,13 @@ if env_time_interval > 0:
     time_interval = env_time_interval
 
 
-def monitor_auth():
+def monitor_auth(user_list_3=None):
     logger.info("Initializing...")
     net_auth = ShmtuNetAuth()
 
     logger.info("Reading user information...")
-    user_list_3 = get_user_list()
+    if user_list_3 is None:
+        user_list_3 = get_user_list()
 
     if len(user_list_3) == 0:
         logger.error("No user information found.")
@@ -58,8 +59,13 @@ def monitor_auth():
 
 
 def start_monitor_auth():
+    users = get_user_list()
+    if not users:
+        logger.error("No valid accounts configured. Set SHMTU_AUTH_USER_LIST and matching passwords.")
+        raise SystemExit(1)
+
     logger.info("Create Thread")
-    t = threading.Thread(target=monitor_auth)
+    t = threading.Thread(target=monitor_auth, args=(users,))
     logger.info("Created Thread")
     logger.info("Start Thread")
     t.start()

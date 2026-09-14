@@ -25,7 +25,7 @@ ruff check .
 flake8 .
 
 # Docker (headless version for servers)
-docker compose -f docker_headless/docker-compose.yml up --build -d
+docker compose -f Docker/docker-compose.yaml up --build -d
 ```
 
 ## Architecture
@@ -36,10 +36,7 @@ docker compose -f docker_headless/docker-compose.yml up --build -d
    - Entry: `src/shmtu_auth/__main__.py` → `src/shmtu_auth/src/entry.py`
    - Dependencies: requests, loguru, toml, PyYAML, chardet
 
-2. **Docker Headless** (`docker_headless/app/`): Minimal dependency version for servers
-   - Entry: `docker_headless/app/main.py`
-   - Dependencies: only requests (no loguru, toml, PyQt)
-   - Logs to stdout for Docker compatibility
+2. **Docker** (`Docker/`): Runs the main CLI with environment configuration and OCR.
 
 ### Core Authentication Flow
 
@@ -80,13 +77,9 @@ SHMTU_AUTH_TIME_INTERVAL=60                     # Check interval in seconds
 - Periodically checks connectivity via Baidu/Bilibili probes
 - Attempts login for each configured user until one succeeds
 
-## Docker Headless
+## Docker
 
-The `docker_headless/` directory is a standalone minimal version:
-- No GUI dependencies
-- No loguru/toml/PyQt dependencies
-- Same dual login strategy (legacy + H3C fallback)
-- Environment variable configuration only
+`Docker/` packages the main CLI. Logs and credential data are persisted with volumes.
 
 ## Testing
 

@@ -4,13 +4,9 @@ Linux 分支用构造出来的假 sysfs 目录覆盖 —— 这样不必真进�
 也能验证「host 网络能选对、非 host 网络会明确报错」这两条关键行为。
 """
 
-from pathlib import Path
 
 from shmtu_auth.src.core import device_id as did
 
-REPO_ROOT = Path(__file__).resolve().parent.parent
-MAIN_DEVICE_ID = REPO_ROOT / "src" / "shmtu_auth" / "src" / "core" / "device_id.py"
-DOCKER_DEVICE_ID = REPO_ROOT / "docker_headless" / "app" / "device_id.py"
 
 
 def _make_net(tmp_path, entries):
@@ -135,8 +131,3 @@ def test_native_detection_does_not_crash():
     info = did.detect_device_mac()
     assert isinstance(info.mac, str)
     assert len(info.mac) in (0, 12)
-
-
-def test_docker_copy_is_identical():
-    """docker_headless 是独立副本，两份必须逐字节一致（改一份就得改两份）。"""
-    assert MAIN_DEVICE_ID.read_text(encoding="utf-8") == DOCKER_DEVICE_ID.read_text(encoding="utf-8")

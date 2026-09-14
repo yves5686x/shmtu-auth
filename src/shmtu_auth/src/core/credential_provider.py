@@ -83,7 +83,7 @@ class CredentialBundle:
             if not isinstance(item, dict):
                 continue
             user_id = str(item.get("id") or "").strip()
-            password = str(item.get("password") or "").strip()
+            password = str(item.get("password") or "")
             if user_id and password:
                 users.append({"id": user_id, "password": password})
 
@@ -129,13 +129,13 @@ def parse_payload(payload: Dict, mac: str = "") -> CredentialBundle:
             if not isinstance(item, dict):
                 continue
             user_id = str(item.get("id") or item.get("userId") or item.get("user") or "").strip()
-            password = str(item.get("password") or item.get("pwd") or "").strip()
+            password = str(item.get("password") or item.get("pwd") or "")
             if user_id and password:
                 users.append({"id": user_id, "password": password})
 
     if not users:
         user_id = str(payload.get("user") or payload.get("userId") or "").strip()
-        password = str(payload.get("password") or payload.get("pwd") or "").strip()
+        password = str(payload.get("password") or payload.get("pwd") or "")
         if user_id and password:
             users.append({"id": user_id, "password": password})
 

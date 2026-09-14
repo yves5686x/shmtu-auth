@@ -17,7 +17,7 @@ from urllib.parse import urlencode
 
 import pytest
 
-from _portal_test_utils import FakeResponse, FakeSession, docker_app
+from _portal_test_utils import FakeResponse, FakeSession
 
 from shmtu_auth.src.core.eportal_protocol import (
     PLACEHOLDER_SERVICE_PREFIX,
@@ -44,17 +44,6 @@ def _new_main_auth():
     return ShmtuNetAuthCore()
 
 
-def both_candidate_providers():
-    """返回 [(名称, 工厂函数), ...]，主包与 docker 两份实现一起参数化。
-
-    工厂函数每次新建一个实例，避免"记住上次成功的 service"这类实例状态在用例间串味。
-    """
-    providers = [("main", _new_main_auth)]
-
-    with docker_app() as (_, auth_core, _, _):
-        providers.append(("docker", lambda: auth_core.HeadlessNetAuth()))
-
-    return providers
 
 
 # ------------------------------------------------- service 参数编码与线上字节
@@ -208,7 +197,7 @@ def test_query_account_service_empty_without_username():
 # ---------------------------------------------------------- service 候选列表
 
 
-@pytest.mark.parametrize("name,provider", both_candidate_providers())
+@pytest.mark.parametrize("name,provider", [("main", _new_main_auth)])
 def test_candidates_cover_both_wired_and_wireless(name, provider, monkeypatch):
     """默认必须把两种接入类型都列为候选，且顺序稳定。"""
     monkeypatch.delenv("SHMTU_AUTH_PORTAL_SERVICE", raising=False)
@@ -222,7 +211,7 @@ def test_candidates_cover_both_wired_and_wireless(name, provider, monkeypatch):
     assert [display for display, _ in candidates] == ["校园网(有线)", "iSMU(无线)"]
 
 
-@pytest.mark.parametrize("name,provider", both_candidate_providers())
+@pytest.mark.parametrize("name,provider", [("main", _new_main_auth)])
 def test_candidates_never_depend_on_network_type(name, provider, monkeypatch):
     """回归：没有任何环境信息也照样给出两个候选（不猜网络类型）。"""
     monkeypatch.delenv("SHMTU_AUTH_PORTAL_SERVICE", raising=False)
@@ -231,7 +220,7 @@ def test_candidates_never_depend_on_network_type(name, provider, monkeypatch):
     assert len(provider()._portal_service_candidates()) == 2
 
 
-@pytest.mark.parametrize("name,provider", both_candidate_providers())
+@pytest.mark.parametrize("name,provider", [("main", _new_main_auth)])
 def test_config_pins_single_candidate(name, provider, monkeypatch):
     """配置项既然显式给了值，就只试它，不再兜到另一种类型。"""
     monkeypatch.setenv("SHMTU_AUTH_PORTAL_SERVICE", "iSMU")
@@ -241,7 +230,7 @@ def test_config_pins_single_candidate(name, provider, monkeypatch):
     assert candidates == [("iSMU", HAR_WIRELESS_SERVICE)]
 
 
-@pytest.mark.parametrize("name,provider", both_candidate_providers())
+@pytest.mark.parametrize("name,provider", [("main", _new_main_auth)])
 def test_config_accepts_preencoded_value(name, provider, monkeypatch):
     monkeypatch.setenv("SHMTU_AUTH_PORTAL_SERVICE", HAR_WIRED_SERVICE)
 
@@ -250,7 +239,7 @@ def test_config_accepts_preencoded_value(name, provider, monkeypatch):
     assert candidates == [(HAR_WIRED_SERVICE, HAR_WIRED_SERVICE)]
 
 
-@pytest.mark.parametrize("name,provider", both_candidate_providers())
+@pytest.mark.parametrize("name,provider", [("main", _new_main_auth)])
 def test_last_successful_service_is_tried_first(name, provider, monkeypatch):
     """上次成功的类型排到最前面（省一轮），但另一个候选仍然保留。"""
     monkeypatch.delenv("SHMTU_AUTH_PORTAL_SERVICE", raising=False)
@@ -263,7 +252,7 @@ def test_last_successful_service_is_tried_first(name, provider, monkeypatch):
     assert [value for _, value in candidates] == [HAR_WIRELESS_SERVICE, HAR_WIRED_SERVICE]
 
 
-@pytest.mark.parametrize("name,provider", both_candidate_providers())
+@pytest.mark.parametrize("name,provider", [("main", _new_main_auth)])
 def test_unknown_memo_does_not_break_order(name, provider, monkeypatch):
     """记忆值不在候选里（例如上次用的是别的校区服务）时，顺序保持不变。"""
     monkeypatch.delenv("SHMTU_AUTH_PORTAL_SERVICE", raising=False)
@@ -280,58 +269,12 @@ def test_unknown_memo_does_not_break_order(name, provider, monkeypatch):
 # ------------------------------------------------------------- docker 一致性
 
 
-def test_docker_service_candidates_match_main(monkeypatch):
-    """同一组输入下，docker 版与主包的候选列表必须完全一致。"""
-    monkeypatch.delenv("SHMTU_AUTH_PORTAL_SERVICE", raising=False)
-
-    cases = [
-        ("", ""),
-        ("", HAR_WIRELESS_SERVICE),
-        ("iSMU", ""),
-        (HAR_WIRED_SERVICE, ""),
-    ]
-
-    with docker_app() as (_, auth_core, _, _):
-        for config, memo in cases:
-            if config:
-                monkeypatch.setenv("SHMTU_AUTH_PORTAL_SERVICE", config)
-            else:
-                monkeypatch.delenv("SHMTU_AUTH_PORTAL_SERVICE", raising=False)
-
-            main_auth = _new_main_auth()
-            docker_auth = auth_core.HeadlessNetAuth()
-            main_auth._last_ok_service = memo
-            docker_auth._last_ok_service = memo
-
-            assert (
-                main_auth._portal_service_candidates() == docker_auth._portal_service_candidates()
-            ), f"config={config!r} memo={memo!r} 结果不一致"
 
 
-def test_docker_encode_service_param_matches_main():
-    with docker_app() as (eportal_protocol, _, _, _):
-        assert eportal_protocol.encode_service_param is not encode_service_param
-        for value in ("校园网", "iSMU", HAR_WIRED_SERVICE, "", "  "):
-            assert eportal_protocol.encode_service_param(value) == encode_service_param(value)
 
 
-def test_docker_response_text_decodes_utf8():
-    with docker_app() as (eportal_protocol, _, _, _):
-        res = FakeResponse(VALID_CODE_ERROR_BODY.encode("utf-8"))
-        decoded = eportal_protocol.EPortalClient._response_text(res)
-        assert json.loads(decoded)["message"] == "验证码错误."
 
 
-def test_docker_service_type_constants():
-    with docker_app() as (eportal_protocol, auth_core, _, _):
-        from shmtu_auth.src.core.shmtu_auth_const_value import ServiceType
-
-        assert auth_core.ServiceType.EDU == ServiceType.EDU
-        assert auth_core.ServiceType.ISMU == ServiceType.ISMU
-        # 常量本身就是「编码一次」的形态，正好等于 quote 原始名
-        assert auth_core.ServiceType.EDU == encode_service_param("校园网")
-        # 占位前缀两处必须一致
-        assert eportal_protocol.PLACEHOLDER_SERVICE_PREFIX == PLACEHOLDER_SERVICE_PREFIX
 
 
 # ------------------------------------------------ 与浏览器字节对齐（HAR 回归）
@@ -382,18 +325,6 @@ def test_query_account_service_search_uses_raw_query_string():
     assert kwargs["data"]["username"] == "202540510004"
 
 
-def test_docker_index_and_search_use_raw_query_string():
-    with docker_app() as (eportal_protocol, _, _, _):
-        session = FakeSession(FakeResponse(b"ok"))
-        client = eportal_protocol.EPortalClient(session)
-        client.open_entry(ENCODED_QS)
-        _, url = session.requests_sent[-1]
-        assert url.endswith("index.jsp?" + RAW_QS)
-
-        session2 = FakeSession(FakeResponse(b"iSMU"))
-        client2 = eportal_protocol.EPortalClient(session2)
-        client2.query_account_service(ENCODED_QS, "u")
-        assert session2.kwargs_sent[-1]["data"]["search"] == "?" + RAW_QS
 
 
 def test_page_info_uses_raw_query_string():
@@ -412,12 +343,6 @@ def test_page_info_uses_raw_query_string():
     assert "%3D" not in kwargs["data"]["queryString"]
 
 
-def test_docker_page_info_uses_raw_query_string():
-    with docker_app() as (eportal_protocol, _, _, _):
-        session = FakeSession(FakeResponse(b'{"validCodeUrl": "/eportal/validcode?rnd=1"}'))
-        client = eportal_protocol.EPortalClient(session)
-        client.query_page_info(ENCODED_QS)
-        assert session.kwargs_sent[-1]["data"]["queryString"] == RAW_QS
 
 
 def test_login_flow_calls_get_services_before_login():

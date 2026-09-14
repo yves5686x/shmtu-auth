@@ -1,0 +1,16 @@
+.git
+.env
+**/.env
+**/__pycache__
+**/*.pyc
+.venv
+logs
+data
+config
+config.toml
+**/logs
+**/data
+.pytest_cache
+.ruff_cache
+src/shmtu_auth/config/config.toml
+src/shmtu_auth/config.toml

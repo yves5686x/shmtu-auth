@@ -90,7 +90,7 @@ def get_user_num_list():
 
 
 def get_user_pwd(user_num):
-    user_pwd = get_env_str("SHMTU_AUTH_USER_PWD_" + user_num, "")
+    user_pwd = get_env_str("SHMTU_AUTH_USER_PWD_" + user_num, "", strip=False)
     return user_pwd
 
 

@@ -24,7 +24,4 @@ CheckAndLoadEnvVariable "SHMTU_WEBHOOK_SLEEP_TIME_END" "7:00"
 # --------------------------------------------------
 
 # --------------------------------------------------
-# Test
-CheckAndLoadEnvVariable "SHMTU_AUTH_USER_LIST" "202300000000"
-CheckAndLoadEnvVariable "SHMTU_AUTH_USER_PWD_202300000000" "202300000000"
-# --------------------------------------------------
+# Accounts are supplied explicitly; never populate sample credentials.

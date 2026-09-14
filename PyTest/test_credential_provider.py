@@ -1,13 +1,9 @@
 """自建凭据服务客户端的单元测试。"""
 
 import json
-from pathlib import Path
 
 from shmtu_auth.src.core import credential_provider as cp
 
-REPO_ROOT = Path(__file__).resolve().parent.parent
-MAIN_PROVIDER = REPO_ROOT / "src" / "shmtu_auth" / "src" / "core" / "credential_provider.py"
-DOCKER_PROVIDER = REPO_ROOT / "docker_headless" / "app" / "credential_provider.py"
 
 
 class _FakeResponse:
@@ -172,8 +168,3 @@ def test_bundle_freshness():
     assert bundle.is_fresh(now=105.0) is True
     assert bundle.is_fresh(now=111.0) is False
     assert cp.CredentialBundle(users=[{"id": "1", "password": "p"}]).is_fresh() is False
-
-
-def test_docker_copy_is_identical():
-    """docker_headless 是独立副本，两份必须逐字节一致（改一份就得改两份）。"""
-    assert MAIN_PROVIDER.read_text(encoding="utf-8") == DOCKER_PROVIDER.read_text(encoding="utf-8")

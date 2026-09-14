@@ -6,13 +6,12 @@
 queryString，报出「Query String is Invalid」。
 
 这个坑的表现是「没抓到门户地址」，很容易被误判成网络不通，所以把判据
-钉死在这里，主包和 docker 副本各测一遍。
+钉死在这里，Docker 与 GUI 共用主包实现。
 """
 
 from unittest.mock import patch
 
 import pytest
-from _portal_test_utils import docker_app
 
 from shmtu_auth.src.core.core import ShmtuNetAuthCore
 from shmtu_auth.src.core.get_query_string_requests import looks_like_portal
@@ -31,18 +30,12 @@ NEW_PORTAL = (
 OLD_PORTAL = "http://hwifi.shmtu.edu.cn/auth.html?userip=10.11.19.117"
 
 
-def docker_looks_like_portal():
-    """取出 docker 副本里的同款函数（独立副本，不能 import 主包）。"""
-    with docker_app() as (_, auth_core, _, _):
-        return auth_core.looks_like_portal
 
 
-@pytest.fixture(params=["main", "docker"])
-def detect(request):
-    """参数化：主包与 docker 副本的判据必须行为一致。"""
-    if request.param == "main":
-        return looks_like_portal
-    return docker_looks_like_portal()
+@pytest.fixture
+def detect():
+    """参数化：检查主包门户识别判据。"""
+    return looks_like_portal
 
 
 class TestLooksLikePortal:
@@ -85,11 +78,6 @@ class TestSplitAuthResult:
         assert query_string.startswith("wlanuserip%3D")
         assert "mac%3D67d1ff70d8b083fe77eff0367912afaa" in query_string
 
-    def test_docker_splits_new_portal_url(self):
-        with docker_app() as (_, auth_core, _, _):
-            portal_url, query_string = auth_core.HeadlessNetAuth._split_auth_result(NEW_PORTAL)
-        assert portal_url == NEW_PORTAL
-        assert "mac%3D67d1ff70d8b083fe77eff0367912afaa" in query_string
 
     def test_bare_query_string_passthrough(self):
         """只给裸 queryString 时，门户地址为空、原样返回。"""
@@ -113,20 +101,6 @@ class TestManualQueryString:
 
         assert core_exp.get_query_string() == NEW_PORTAL
 
-    def test_docker_manual_value_skips_probing(self, monkeypatch):
-        with docker_app() as (_, auth_core, _, _):
-            monkeypatch.setattr(
-                auth_core,
-                "get_env_str",
-                lambda key, default=None: NEW_PORTAL
-                if key == "SHMTU_AUTH_QUERY_STRING"
-                else default,
-            )
-            client = auth_core.HeadlessNetAuth()
-            client.is_connected = lambda: False
-            client._get_text_code = lambda *a, **k: pytest.fail("配了手动 queryString 就不该再探测")
-
-            assert client.get_auth_result() == NEW_PORTAL
 
 
 class TestConnectivity:
@@ -188,17 +162,8 @@ class TestConnectivity:
         monkeypatch.setattr(mod, "probe_many", fake_probe)
         return mod.is_connect_by_sites()
 
-    @classmethod
-    def _docker_connected(cls, monkeypatch, responses):
-        with docker_app() as (_, auth_core, _, _):
-            client = auth_core.HeadlessNetAuth()
-            mapping = cls._as_mapping(responses)
-            monkeypatch.setattr(
-                client, "_get_text_code", lambda url: mapping.get(url, ("", 0, ""))
-            )
-            return client.is_connected()
 
-    @pytest.mark.parametrize("runner", ["_main_connected", "_docker_connected"])
+    @pytest.mark.parametrize("runner", ["_main_connected"])
     def test_502_from_proxy_is_offline(self, monkeypatch, runner):
         """代理返回 502 错误页：必须判为离线（原来会误判成在线）。"""
         responses = [
@@ -208,7 +173,7 @@ class TestConnectivity:
         ]
         assert getattr(self, runner)(monkeypatch, responses) is False
 
-    @pytest.mark.parametrize("runner", ["_main_connected", "_docker_connected"])
+    @pytest.mark.parametrize("runner", ["_main_connected"])
     def test_407_proxy_auth_required_is_offline(self, monkeypatch, runner):
         responses = [
             (self.BAIDU, ("", 407, self.BAIDU)),
@@ -217,7 +182,7 @@ class TestConnectivity:
         ]
         assert getattr(self, runner)(monkeypatch, responses) is False
 
-    @pytest.mark.parametrize("runner", ["_main_connected", "_docker_connected"])
+    @pytest.mark.parametrize("runner", ["_main_connected"])
     def test_200_with_foreign_body_is_offline(self, monkeypatch, runner):
         """状态码 200 但内容是代理/网关的拦截页，也不能算联网。"""
         responses = [
@@ -227,7 +192,7 @@ class TestConnectivity:
         ]
         assert getattr(self, runner)(monkeypatch, responses) is False
 
-    @pytest.mark.parametrize("runner", ["_main_connected", "_docker_connected"])
+    @pytest.mark.parametrize("runner", ["_main_connected"])
     def test_real_page_is_online(self, monkeypatch, runner):
         """https 目标真正拿到内容才算联网。"""
         responses = [
@@ -235,7 +200,7 @@ class TestConnectivity:
         ]
         assert getattr(self, runner)(monkeypatch, responses) is True
 
-    @pytest.mark.parametrize("runner", ["_main_connected", "_docker_connected"])
+    @pytest.mark.parametrize("runner", ["_main_connected"])
     def test_http_only_200_is_offline(self, monkeypatch, runner):
         """【本次修复的核心】http 全 200、https 全不通 —— 一眼假，必须判离线。
 
@@ -252,7 +217,7 @@ class TestConnectivity:
         ]
         assert getattr(self, runner)(monkeypatch, responses) is False
 
-    @pytest.mark.parametrize("runner", ["_main_connected", "_docker_connected"])
+    @pytest.mark.parametrize("runner", ["_main_connected"])
     def test_https_error_response_still_means_online(self, monkeypatch, runner):
         """https 返回 4xx/5xx 也算外网可达 —— 跟「连不上」是两回事。
 
@@ -266,7 +231,7 @@ class TestConnectivity:
         ]
         assert getattr(self, runner)(monkeypatch, responses) is True
 
-    @pytest.mark.parametrize("runner", ["_main_connected", "_docker_connected"])
+    @pytest.mark.parametrize("runner", ["_main_connected"])
     def test_redirected_to_portal_is_offline(self, monkeypatch, runner):
         """被 captive portal 劫持时必须判为离线。"""
         responses = [
@@ -276,7 +241,7 @@ class TestConnectivity:
         ]
         assert getattr(self, runner)(monkeypatch, responses) is False
 
-    @pytest.mark.parametrize("runner", ["_main_connected", "_docker_connected"])
+    @pytest.mark.parametrize("runner", ["_main_connected"])
     def test_request_exception_is_offline(self, monkeypatch, runner):
         responses = []
         assert getattr(self, runner)(monkeypatch, responses) is False
@@ -293,10 +258,6 @@ class TestProbeBypassesProxy:
         assert session.trust_env is False
         mod._session = None
 
-    def test_docker_session_trust_env_disabled(self):
-        with docker_app() as (_, auth_core, _, _):
-            client = auth_core.HeadlessNetAuth()
-        assert client.session.trust_env is False
 
 
 class TestExtractMac:
@@ -322,32 +283,28 @@ class TestExtractMac:
     def _main_extract():
         return ShmtuNetAuthCore._extract_mac
 
-    @staticmethod
-    def _docker_extract():
-        with docker_app() as (_, auth_core, _, _):
-            return auth_core.HeadlessNetAuth()._extract_mac
 
-    @pytest.mark.parametrize("runner", ["_main_extract", "_docker_extract"])
+    @pytest.mark.parametrize("runner", ["_main_extract"])
     def test_plain_query_string(self, runner):
         assert getattr(self, runner)()(self.FIELDS) == self.MAC
 
-    @pytest.mark.parametrize("runner", ["_main_extract", "_docker_extract"])
+    @pytest.mark.parametrize("runner", ["_main_extract"])
     def test_encoded_query_string(self, runner):
         """这是实际会走到的形态（& → %26，= → %3D）。"""
         assert getattr(self, runner)()(self.ENCODED) == self.MAC
 
-    @pytest.mark.parametrize("runner", ["_main_extract", "_docker_extract"])
+    @pytest.mark.parametrize("runner", ["_main_extract"])
     def test_leading_question_mark(self, runner):
         assert getattr(self, runner)()("?" + self.FIELDS) == self.MAC
         assert getattr(self, runner)()("?" + self.ENCODED) == self.MAC
 
-    @pytest.mark.parametrize("runner", ["_main_extract", "_docker_extract"])
+    @pytest.mark.parametrize("runner", ["_main_extract"])
     def test_missing_mac_falls_back_to_default(self, runner):
         from shmtu_auth.src.core.portal_crypto import DEFAULT_MAC
 
         assert getattr(self, runner)()("wlanuserip=8f36a4b9&t=wireless-v2") == DEFAULT_MAC
 
-    @pytest.mark.parametrize("runner", ["_main_extract", "_docker_extract"])
+    @pytest.mark.parametrize("runner", ["_main_extract"])
     def test_empty_input_falls_back_to_default(self, runner):
         from shmtu_auth.src.core.portal_crypto import DEFAULT_MAC
 
@@ -379,17 +336,6 @@ class TestPublicApiStillExists:
         "ProbeResult",
     )
 
-    # docker 副本里挂在 client 上的方法
-    DOCKER_REQUIRED = (
-        "_get_text_code",
-        "is_connected",
-        "_is_expected_host",
-        "get_auth_result",
-    )
-
-    # docker 副本里挂在模块上的函数（注意不是 client 的方法）
-    DOCKER_MODULE_REQUIRED = ("looks_like_portal",)
-
     def test_main_module_keeps_public_api(self):
         from shmtu_auth.src.core import get_query_string_requests as mod
 
@@ -401,22 +347,6 @@ class TestPublicApiStillExists:
                 continue
             assert callable(getattr(mod, name)), f"{name} 不是可调用对象"
 
-    def test_docker_module_keeps_public_api(self):
-        with docker_app() as (_, auth_core, _, _):
-            client = auth_core.HeadlessNetAuth()
-            missing = [
-                name for name in self.DOCKER_REQUIRED if not hasattr(client, name)
-            ]
-            assert not missing, f"docker 副本方法被误删: {missing}"
-
-            missing_module = [
-                name
-                for name in self.DOCKER_MODULE_REQUIRED
-                if not hasattr(auth_core, name)
-            ]
-            assert not missing_module, (
-                f"docker 副本模块级函数被误删: {missing_module}"
-            )
 
     def test_legacy_helper_is_actually_callable(self, monkeypatch):
         """光 hasattr 不够 —— 还要真能调用，不抛 NameError。"""

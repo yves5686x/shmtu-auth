@@ -1,4 +1,4 @@
-"""``docker_headless`` 认证主流程的单测。
+"""主包 CLI / Docker 认证主流程的单测。
 
 Docker 部署是**无人值守**的：没有弹窗，验证码全靠 OCR，出问题也没人看得见。
 所以这里把「两种接入类型依次尝试、验证码重试、OCR 失败、密码加密、兜底策略」
@@ -8,7 +8,14 @@ Docker 部署是**无人值守**的：没有弹窗，验证码全靠 OCR，出�
 """
 
 import pytest
-from _portal_test_utils import docker_app
+from contextlib import contextmanager
+
+
+@contextmanager
+def main_modules():
+    from shmtu_auth.src.core import eportal_protocol, core, captcha_solver, portal_crypto
+    yield eportal_protocol, core, captcha_solver, portal_crypto
+
 
 MODULUS = (
     "94dd2a8675fb779e6b9f7103698634cd400f27a154afa67af6166a43fc26417222a79506d34cacc7641946abda1785b7"
@@ -96,11 +103,11 @@ def make_fake_portal_client(page_info_cls):
 
 @pytest.fixture
 def env(monkeypatch):
-    """在 docker 模块上下文里搭好一个 HeadlessNetAuth，并挡住真实联网探测。"""
+    """在 docker 模块上下文里搭好一个 ShmtuNetAuthCore，并挡住真实联网探测。"""
     CREATED.clear()
     PENDING.clear()
 
-    with docker_app() as (eportal_protocol, auth_core, captcha_solver, portal_crypto):
+    with main_modules() as (eportal_protocol, auth_core, captcha_solver, portal_crypto):
         monkeypatch.setattr(
             auth_core, "EPortalClient", make_fake_portal_client(eportal_protocol.PortalPageInfo)
         )
@@ -108,9 +115,10 @@ def env(monkeypatch):
         # use_ocr / no_ocr 控制。要验证「后端缺失就快速失败」用 no_ocr_backend。
         monkeypatch.setattr(auth_core, "get_available_solvers", lambda: ["fake-ocr"])
 
-        auth = auth_core.HeadlessNetAuth()
+        auth = auth_core.ShmtuNetAuthCore()
         # 真实 is_connected() 会去访问百度和 B 站，测试里一律当作离线
-        monkeypatch.setattr(auth, "is_connected", lambda: False)
+        monkeypatch.setattr(auth_core, "check_is_connected_retry", lambda **kw: False)
+        monkeypatch.setattr(auth_core, "get_query_string", lambda **kw: QUERY_STRING)
 
         yield {
             "auth": auth,
@@ -144,7 +152,7 @@ def test_login_success_with_ocr_and_encryption(env, monkeypatch):
 
     client = env["client"]()
     assert (ok, msg) == (True, "Login Success (Portal)")
-    assert env["auth"].is_login is True
+    assert env["auth"].isLogin is True
 
     # 会话必须先建立在 index.jsp 上，验证码与会话绑定
     assert client.opened == [QUERY_STRING]
@@ -261,7 +269,7 @@ def test_empty_query_string_is_rejected(env):
     ok, msg = env["auth"]._login_eportal(USER, PASSWORD, "   ")
 
     assert ok is False
-    assert "Query string is invalid" in msg
+    assert "query string is invalid" in msg.lower()
 
 
 # ---------------------------------------------------------------- 验证码重试
@@ -457,7 +465,7 @@ def test_login_skips_h3c_fallback_on_captcha_error(env, monkeypatch):
 def test_login_falls_back_to_h3c_on_other_failure(env, monkeypatch):
     auth = env["auth"]
     monkeypatch.setattr(auth, "_login_eportal", lambda *a, **kw: (False, "认证失败"))
-    monkeypatch.setattr(auth, "get_auth_result", lambda **kw: "http://1.1.1.1/auth.html|a=1")
+    monkeypatch.setattr(env["auth_core"], "get_query_string", lambda **kw: "http://1.1.1.1/auth.html|a=1")
     monkeypatch.setattr(auth, "_login_h3c", lambda user, pwd, portal_url="": (True, "Login Success (H3C)"))
 
     ok, msg = auth.login(USER, PASSWORD, skip_network_check=True)
@@ -468,7 +476,7 @@ def test_login_falls_back_to_h3c_on_other_failure(env, monkeypatch):
 def test_login_reports_both_failures_when_both_paths_fail(env, monkeypatch):
     auth = env["auth"]
     monkeypatch.setattr(auth, "_login_eportal", lambda *a, **kw: (False, "认证失败"))
-    monkeypatch.setattr(auth, "get_auth_result", lambda **kw: "http://1.1.1.1/auth.html|a=1")
+    monkeypatch.setattr(env["auth_core"], "get_query_string", lambda **kw: "http://1.1.1.1/auth.html|a=1")
     monkeypatch.setattr(auth, "_login_h3c", lambda user, pwd, portal_url="": (False, "H3C 超时"))
 
     ok, msg = auth.login(USER, PASSWORD, skip_network_check=True)
@@ -480,7 +488,7 @@ def test_login_reports_both_failures_when_both_paths_fail(env, monkeypatch):
 def test_login_does_not_use_h3c_without_portal_url(env, monkeypatch):
     auth = env["auth"]
     monkeypatch.setattr(auth, "_login_eportal", lambda *a, **kw: (False, "pageInfo request failed"))
-    monkeypatch.setattr(auth, "get_auth_result", lambda **kw: "")
+    monkeypatch.setattr(env["auth_core"], "get_query_string", lambda **kw: "")
     called = []
     monkeypatch.setattr(auth, "_login_h3c", lambda *a, **kw: called.append(1) or (True, "H3C"))
 
@@ -494,14 +502,14 @@ def test_login_rejects_empty_credentials(env):
     ok, msg = env["auth"].login("", PASSWORD, skip_network_check=True)
 
     assert ok is False
-    assert "empty" in msg.lower()
+    assert "为空" in msg
 
 
 def test_login_short_circuits_when_already_online(env, monkeypatch):
     auth = env["auth"]
-    monkeypatch.setattr(auth, "is_connected", lambda: True)
+    monkeypatch.setattr(env["auth_core"], "check_is_connected_retry", lambda **kw: True)
 
-    assert auth.login(USER, PASSWORD) == (True, "Already online")
+    assert auth.login(USER, PASSWORD) == (True, "Already Login")
 
 
 def test_login_passes_provider_down_to_eportal(env, monkeypatch):
@@ -525,7 +533,7 @@ def test_login_passes_provider_down_to_eportal(env, monkeypatch):
 
 
 def test_extract_mac(env):
-    extract = env["auth_core"].HeadlessNetAuth._extract_mac
+    extract = env["auth_core"].ShmtuNetAuthCore._extract_mac
     default_mac = env["portal_crypto"].DEFAULT_MAC
 
     assert extract("") == default_mac
@@ -538,53 +546,6 @@ def test_extract_mac(env):
 def test_login_api_defaults_to_portal(env):
     auth = env["auth"]
     assert auth.portal_base == env["auth_core"].DEFAULT_PORTAL_BASE
-    assert auth.login_api.endswith("eportal/InterFace.do?method=")
+    assert auth.url.endswith("eportal/InterFace.do?method=")
 
 
-def test_login_api_honours_env_override(monkeypatch):
-    with docker_app() as (_, auth_core, _, _):
-        monkeypatch.setenv("SHMTU_AUTH_LOGIN_URL", "https://example.test/eportal/")
-        auth = auth_core.HeadlessNetAuth()
-
-        assert auth.portal_base == "https://example.test/eportal/"
-        assert auth.login_api == "https://example.test/eportal/InterFace.do?method="
-
-
-class TestCheckIntervalCompatibility:
-    """轮询间隔的变量名兼容性。
-
-    Docker 历史上这个配置叫 ``SHMTU_AUTH_CHECK_INTERVAL``，主包侧叫
-    ``SHMTU_AUTH_TIME_INTERVAL``（同一个含义、两个名字，写混了不报错）。
-    现在两边统一成后者，但**旧名必须继续认** —— 用户的 .env 里写的是旧名，
-    若只认新名，不会报任何错、只会静默按默认值跑，属于最难排查的那类问题。
-    """
-
-    @staticmethod
-    def _interval(monkeypatch, **env):
-        for key in ("SHMTU_AUTH_TIME_INTERVAL", "SHMTU_AUTH_CHECK_INTERVAL"):
-            monkeypatch.delenv(key, raising=False)
-        for key, value in env.items():
-            monkeypatch.setenv(key, value)
-        with docker_app():
-            from app.config import get_check_interval
-
-            return get_check_interval()
-
-    def test_new_name(self, monkeypatch):
-        assert self._interval(monkeypatch, SHMTU_AUTH_TIME_INTERVAL="30") == 30
-
-    def test_legacy_name_still_works(self, monkeypatch):
-        assert self._interval(monkeypatch, SHMTU_AUTH_CHECK_INTERVAL="45") == 45
-
-    def test_default_is_60(self, monkeypatch):
-        assert self._interval(monkeypatch) == 60
-
-    def test_new_name_wins_when_both_set(self, monkeypatch):
-        assert (
-            self._interval(
-                monkeypatch,
-                SHMTU_AUTH_TIME_INTERVAL="10",
-                SHMTU_AUTH_CHECK_INTERVAL="99",
-            )
-            == 10
-        )

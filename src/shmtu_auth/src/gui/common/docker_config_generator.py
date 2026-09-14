@@ -1,7 +1,8 @@
 """为多台服务器生成 Docker 部署配置。
 
 GUI 的「用户列表」里挑出有效账号，按固定数量切分给 N 台机器，每台生成一个
-自包含目录，拷到目标机器上即可直接 ``docker compose up -d --build``：
+配置目录；目标机器准备好源码并设置 build.context 后，执行
+``docker compose up -d --build``：
 
     <保存目录>/
     ├── README.md              部署说明
@@ -12,13 +13,15 @@ GUI 的「用户列表」里挑出有效账号，按固定数量切分给 N 台�
         ├── .env
         └── docker-compose.yml
 
-环境变量名全部对齐 ``docker_headless/app/config.py`` 实际读取的那套，
+环境变量名全部对齐主包 CLI 实际读取的那套，
 少一个都不会生效。
 
 ⚠️ ``.env`` 里是**明文密码**，生成后请自行妥善保管，别提交到版本库。
 """
 
+import json
 import os
+import re
 from dataclasses import dataclass, field
 from typing import List, Sequence, Tuple
 
@@ -29,7 +32,7 @@ logger = get_logger()
 # 目录名格式，也是各机器的 SHMTU_MACHINE_NAME
 MACHINE_DIR_FORMAT = "machine_{index}"
 
-# 生成配置里默认的检测间隔（秒），与 docker_headless/.env.example 保持一致
+# 生成配置里默认的检测间隔（秒），用于主包 CLI
 DEFAULT_CHECK_INTERVAL = 60
 
 
@@ -46,15 +49,15 @@ class GenerateResult:
 
 
 def find_repo_root(start_path: str = "") -> str:
-    """向上找仓库根目录（以含 ``docker_headless`` 为准）。
+    """向上找仓库根目录（以含 ``Docker/Dockerfile`` 为准）。
 
     生成的 docker-compose.yml 要把 build context 指回仓库，
-    否则用户把配置拷到别处就没法构建镜像了。
+    目标机器的源码路径可能不同，部署时需在 compose 中调整。
     """
     current = os.path.abspath(start_path or os.path.dirname(__file__))
 
     for _ in range(10):
-        if os.path.isdir(os.path.join(current, "docker_headless")):
+        if os.path.isfile(os.path.join(current, "Docker", "Dockerfile")):
             return current
         parent = os.path.dirname(current)
         if parent == current:
@@ -89,6 +92,13 @@ def split_users(
     return chunks
 
 
+def _quote_env(value: str) -> str:
+    """单引号避免插值；含反斜杠时用双引号转义，并以 $$ 保留美元符号。"""
+    if "\\" in value:
+        return json.dumps(value, ensure_ascii=False).replace("$", "$$")
+    return "'" + value.replace("'", "\\'") + "'"
+
+
 def _render_env(machine_name: str, users: Sequence[Tuple[str, str]]) -> str:
     """渲染一台机器的 .env。"""
     lines = [
@@ -107,7 +117,7 @@ def _render_env(machine_name: str, users: Sequence[Tuple[str, str]]) -> str:
     ]
 
     for user_id, password in users:
-        lines.append(f"SHMTU_AUTH_USER_PWD_{user_id}={password}")
+        lines.append(f"SHMTU_AUTH_USER_PWD_{user_id}={_quote_env(password)}")
 
     lines += [
         "",
@@ -115,7 +125,7 @@ def _render_env(machine_name: str, users: Sequence[Tuple[str, str]]) -> str:
         f"SHMTU_MACHINE_NAME={machine_name}",
         "",
         "# ---- 检测间隔（秒）----",
-        "# 与主包同名；无头版也认旧名 SHMTU_AUTH_CHECK_INTERVAL，但别再用它了",
+        "# 主包 CLI 的轮询间隔",
         f"SHMTU_AUTH_TIME_INTERVAL={DEFAULT_CHECK_INTERVAL}",
         "",
         "# ---- 可选：自建凭据服务（配了就优先用它，见 config.toml 的 [Credential] 段）----",
@@ -136,21 +146,24 @@ def _render_compose(repo_root: str) -> str:
     ``repo_root`` 为空（例如打包成 exe 后找不到源码目录）时退回 ``..``，
     并在 README 里提醒用户改成实际的仓库路径。
     """
-    context = repo_root if repo_root else ".."
+    context = json.dumps(repo_root or "..", ensure_ascii=False).replace("$", "$$")
 
     return f"""services:
-  shmtu-auth-headless:
+  shmtu-auth:
     build:
       context: {context}
-      dockerfile: docker_headless/Dockerfile
-    image: shmtu-auth-headless:local
-    container_name: shmtu-auth-headless
+      dockerfile: Docker/Dockerfile
+    image: shmtu-auth:local
+    container_name: shmtu-auth
     restart: unless-stopped
     # 必须用 host 网络：容器要看得到宿主物理网卡，设备号（物理 MAC）才取得对
     network_mode: host
     # 所有配置都写在同目录的 .env 里
     env_file:
       - .env
+    volumes:
+      - ./logs:/app/logs
+      - ./data:/app/data
     # onnxruntime + opencv 常驻内存约 200MB，128M 会 OOM
     deploy:
       resources:
@@ -240,6 +253,10 @@ def generate_machine_configs(
     if not users:
         return GenerateResult(ok=False, message="没有可用的账号，请先在用户列表里添加有效账号")
 
+    for user_id, password in users:
+        if not re.fullmatch(r"[0-9]+", user_id) or not password or any(c in password for c in "\r\n\0"):
+            return GenerateResult(ok=False, message="账号必须为数字，密码不能为空或包含换行及空字符")
+
     chunks = split_users(users, machine_count, users_per_machine)
     if not chunks:
         return GenerateResult(ok=False, message="机器数量或每台账号数量不合法")
@@ -262,7 +279,10 @@ def generate_machine_configs(
             machine_dir = os.path.join(save_path, machine_name)
             os.makedirs(machine_dir, exist_ok=True)
 
-            with open(os.path.join(machine_dir, ".env"), "w", encoding="utf-8") as f:
+            env_path = os.path.join(machine_dir, ".env")
+            descriptor = os.open(env_path, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
+            with os.fdopen(descriptor, "w", encoding="utf-8") as f:
+                os.chmod(env_path, 0o600)
                 f.write(_render_env(machine_name, chunk))
 
             with open(os.path.join(machine_dir, "docker-compose.yml"), "w", encoding="utf-8") as f:
