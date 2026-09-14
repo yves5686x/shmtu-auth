@@ -9,6 +9,8 @@ queryString，报出「Query String is Invalid」。
 钉死在这里，主包和 docker 副本各测一遍。
 """
 
+from unittest.mock import patch
+
 import pytest
 from _portal_test_utils import docker_app
 
@@ -144,6 +146,18 @@ class TestConnectivity:
     BAIDU = "http://www.baidu.com"
     BILIBILI = "https://www.bilibili.com/"
     QQ = "https://www.qq.com/"
+
+    @pytest.fixture(autouse=True)
+    def _reset_connect_cache(self):
+        """每个用例开头清一次连通性缓存。
+
+        `is_connect_by_sites` 有短 TTL 缓存（见 get_query_string_requests），
+        否则上一个用例假设出的连通性结论会被后续用例复用，用例之间互相污染。
+        """
+        from shmtu_auth.src.core.get_query_string_requests import reset_connect_cache
+
+        reset_connect_cache()
+        yield
 
     @classmethod
     def _as_mapping(cls, responses) -> dict:
@@ -418,3 +432,96 @@ class TestPublicApiStillExists:
 
         # 不通时返回 ("", 0, "")，重点是调用过程不能抛 NameError
         assert mod.get_text_code("http://127.0.0.1:1") == ("", 0, "")
+
+
+class TestConnectivityCache:
+    """连通性探测的短 TTL 缓存。
+
+    缓存的目的：一次「开始认证」里同一套探测会被多处触发（启动自检 /
+    AsyncNetworkTester / AuthThread 每轮 / 登录后复核），每处都真打一轮网络，
+    慢网下叠加起来好几秒。
+
+    但同时有个必须守住的语义：**复核自己刚做过的动作时不能被缓存挡住**。
+    登录提交后的 ``_confirm_login_success`` 就是一个 —— 它复核的是刚刚那次登录，
+    若命中登录前的旧结论，这层保护就形同虚设，所以它传 ``force=True``。
+    """
+
+    @pytest.fixture(autouse=True)
+    def _reset_connect_cache(self):
+        from shmtu_auth.src.core.get_query_string_requests import reset_connect_cache
+
+        reset_connect_cache()
+        yield
+
+    @staticmethod
+    def _count_probes(monkeypatch) -> list:
+        from shmtu_auth.src.core import get_query_string_requests as mod
+
+        calls: list = []
+        monkeypatch.setattr(
+            mod, "probe_many", lambda urls, *args, **kwargs: calls.append(list(urls)) or []
+        )
+        return calls
+
+    def test_reuse_within_ttl(self, monkeypatch):
+        from shmtu_auth.src.core import get_query_string_requests as mod
+
+        monkeypatch.setenv("SHMTU_AUTH_CONNECT_CACHE_TTL", "60")
+        calls = self._count_probes(monkeypatch)
+
+        assert mod.is_connect_by_sites() is False
+        assert mod.is_connect_by_sites() is False
+        assert len(calls) == 1, "TTL 窗口内不应重复探测"
+
+    def test_force_bypasses_cache(self, monkeypatch):
+        from shmtu_auth.src.core import get_query_string_requests as mod
+
+        monkeypatch.setenv("SHMTU_AUTH_CONNECT_CACHE_TTL", "60")
+        calls = self._count_probes(monkeypatch)
+
+        mod.is_connect_by_sites()
+        mod.is_connect_by_sites(force=True)
+        assert len(calls) == 2, "force=True 必须重新探测"
+
+    def test_ttl_not_positive_disables_cache(self, monkeypatch):
+        from shmtu_auth.src.core import get_query_string_requests as mod
+
+        monkeypatch.setenv("SHMTU_AUTH_CONNECT_CACHE_TTL", "0")
+        calls = self._count_probes(monkeypatch)
+
+        mod.is_connect_by_sites()
+        mod.is_connect_by_sites()
+        assert len(calls) == 2, "TTL<=0 应禁用缓存"
+
+    def test_bad_ttl_env_falls_back(self, monkeypatch):
+        from shmtu_auth.src.core import get_query_string_requests as mod
+
+        monkeypatch.setenv("SHMTU_AUTH_CONNECT_CACHE_TTL", "abc")
+        assert mod._connect_cache_ttl() == 3.0
+
+    def test_fresh_process_does_not_hit_cache(self, monkeypatch):
+        """首次调用不得命中缓存。
+
+        monotonic() 在部分平台是「开机以来的秒数」，若缓存的 ts 初值写成 0.0，
+        开机后立刻启动的进程（now < TTL）会误命中，把「还没探测过」当成
+        「探测过且离线」。
+        """
+        from shmtu_auth.src.core import get_query_string_requests as mod
+
+        with patch.object(mod.time, "monotonic", return_value=1.0):
+            calls = self._count_probes(monkeypatch)
+            mod.is_connect_by_sites()
+        assert len(calls) == 1
+
+    def test_force_propagates_through_core_exp(self, monkeypatch):
+        from shmtu_auth.src.core import core_exp
+
+        seen: list = []
+        monkeypatch.setattr(
+            core_exp, "is_connect_by_sites", lambda force=False: seen.append(force) or True
+        )
+
+        assert core_exp.check_is_connected(force=True) is True
+        assert core_exp.check_is_connected_retry(retry_times=1, wait_time=0, force=True) is True
+        assert core_exp.check_is_connected() is True
+        assert seen == [True, True, False]

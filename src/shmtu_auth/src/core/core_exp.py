@@ -22,18 +22,23 @@ def get_manual_query_string() -> str:
     return (get_env_str(MANUAL_QUERY_STRING_ENV, default="") or "").strip()
 
 
-def check_is_connected() -> bool:
-    return is_connect_by_sites()
+def check_is_connected(force: bool = False) -> bool:
+    """检测是否已联网。
+
+    :param force: 跳过探测结果的 TTL 缓存强制重新探测（复核刚做过的动作时用）
+    """
+    return is_connect_by_sites(force=force)
 
 
 def check_is_connected_retry(
     retry_times: int = 3,
     wait_time: int = 5,
+    force: bool = False,
 ) -> bool:
     # Keep signature for compatibility, but do a single fast probe without retry/wait.
     _ = retry_times
     _ = wait_time
-    return check_is_connected()
+    return check_is_connected(force=force)
 
 
 def get_query_string(skip_connectivity_check: bool = False) -> str:

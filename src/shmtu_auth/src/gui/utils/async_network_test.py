@@ -43,7 +43,9 @@ class AsyncNetworkTester(QThread):
                 logger.debug("AsyncNetworkTester: 测试被中断")
                 return
 
-            is_connected = check_is_connected()
+            # force=True：这是用户手动点的「测试网络」，要的是此刻的真实结果，
+            # 不能命中探测结果的 TTL 缓存（可能还是几秒前的旧结论）
+            is_connected = check_is_connected(force=True)
 
             if not self.should_stop:
                 logger.debug(f"AsyncNetworkTester: 网络检查完成，结果: {is_connected}")

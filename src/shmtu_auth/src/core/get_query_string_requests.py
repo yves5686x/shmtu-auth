@@ -1,10 +1,11 @@
-from typing import List, NamedTuple, Optional, Tuple
-
 import ipaddress
+import os
 import re
 import socket
 import threading
+import time
 from concurrent.futures import ThreadPoolExecutor
+from typing import List, NamedTuple, Optional, Tuple
 from urllib.parse import urlparse
 
 import requests
@@ -24,7 +25,44 @@ READ_TIMEOUT = 4     # 读取超时
 PROBE_WORKERS = 8
 
 # DNS 预检超时（秒）。见 probe_dns 的说明。
-DNS_TIMEOUT = 1.5
+DNS_TIMEOUT = 2
+
+# 连通性探测结果缓存。
+#
+# 一次「开始认证 / 程序启动」里，同一套 3 站点探测会被多处各自触发：
+#   启动自检、AsyncNetworkTester、AuthThread 每轮、login 成功后的复核
+# 以前每处都是独立打一轮网络，慢网下每轮都吃满超时，叠起来好几秒。
+# 这里给结果加一个短 TTL，窗口内直接复用，不再重复探测。
+# 用 SHMTU_AUTH_CONNECT_CACHE_TTL 覆盖（秒，<=0 表示禁用缓存）。
+#
+# ⚠️ 缓存的是「上一次探测的结论」，它不区分这个结论是动作**之前**还是**之后**
+# 得到的。所以凡是「验证自己刚做过的动作」的调用（登录提交后的复核）都必须
+# 传 force=True 跳过缓存，否则会把动作前的旧结论当成复核结果。
+#
+# ts 用 -inf 而不是 0.0：time.monotonic() 在部分平台是「开机以来的秒数」，
+# 进程若在开机后极短时间内启动，0.0 会让首次调用误命中缓存。
+_CONNECT_RESULT_CACHE: dict = {"ts": float("-inf"), "value": False}
+
+
+def _connect_cache_ttl() -> float:
+    raw = (os.environ.get("SHMTU_AUTH_CONNECT_CACHE_TTL", "") or "").strip()
+    if raw:
+        try:
+            return float(raw)
+        except ValueError:
+            logger.warning(f"SHMTU_AUTH_CONNECT_CACHE_TTL 不是数字: {raw!r}，使用默认值")
+    return 3.0
+
+
+def reset_connect_cache() -> None:
+    """清空连通性探测结果缓存。
+
+    正常流程不需要主动调用；单测里每个用例各自 mock 网络，必须在用例
+    开头清一次，否则会把上一个用例的结论带过来。
+    """
+    _CONNECT_RESULT_CACHE["ts"] = float("-inf")
+    _CONNECT_RESULT_CACHE["value"] = False
+
 
 # 门户域名特征。
 #
@@ -176,9 +214,13 @@ def probe_many(
     串行探测在待认证状态下每个地址都要等到超时，5 个地址就是几十秒；
     并发后总耗时取决于最慢的那一个。
 
-    ``dns_precheck`` 会先并发解析所有域名，解析明确失败的直接跳过（记为
-    status=0），不再发起 HTTP 请求。这是提速的关键 —— 见 ``_dns_resolve_one``
-    里那段说明，卡住的主要是 DNS 而不是连接本身。
+    ``dns_precheck`` 会先并发解析所有域名，解析**没能及时成功**的直接跳过
+    （记为 status=0），不再发起 HTTP 请求。这是提速的关键 —— 见
+    ``_dns_resolve_one`` 里那段说明，卡住的主要是 DNS 而不是连接本身。
+
+    「没能及时成功」包括解析失败和**解析超时（None）**两种：解析都卡住
+    的域名，后面 requests 内部的 getaddrinfo（没有超时、connect/read 管不着）
+    会把它再卡一次，所以必须连 None 一起跳过，才能把探测时长真正压住。
 
     每个任务用独立 Session：requests 的 Session 不是线程安全的，
     共享一个在并发下会偶发连接错乱。连接复用的收益远小于正确性。
@@ -187,16 +229,17 @@ def probe_many(
     if not urls:
         return []
 
-    # DNS 预检：解析不了的域名直接跳过，避免在 Windows 上干等几十秒
+    # DNS 预检：解析不快的域名直接跳过，避免在 Windows 上干等几十秒
     dead_hosts: set[str] = set()
     if dns_precheck:
         hosts = [urlparse(u).hostname or "" for u in urls]
         need_dns = sorted({h for h in hosts if h and not _is_ip_literal(h)})
         if need_dns:
             dns_result = probe_dns(need_dns)
-            dead_hosts = {h for h, ok in dns_result.items() if ok is False}
+            # ok 不是 True（即 False 或 None 超时）都跳过：见上面 docstring
+            dead_hosts = {h for h, ok in dns_result.items() if ok is not True}
             if dead_hosts:
-                logger.debug(f"DNS 预检失败，跳过这些域名: {sorted(dead_hosts)}")
+                logger.debug(f"DNS 预检未通过，跳过这些域名: {sorted(dead_hosts)}")
 
     slots: List[ProbeResult | None] = [None] * len(urls)
 
@@ -342,10 +385,23 @@ def judge_connectivity(
     return False, "所有探测目标都失败：" + "；".join(rejections or ["无探测结果"])
 
 
-def is_connect_by_sites() -> bool:
-    """用百度 / B 站 / QQ 探测联网状态，只有真正拿到内容才算已联网。"""
-    logger.info("Starting connectivity probe...")
+def is_connect_by_sites(force: bool = False) -> bool:
+    """用百度 / B 站 / QQ 探测联网状态，只有真正拿到内容才算已联网。
 
+    :param force: 跳过 TTL 缓存，强制重新探测一次。**复核自己刚做过的动作时
+        必须传 True**（例如登录提交后确认是否真的通了）：那一刻缓存里很可能
+        还留着动作之前的结论，复用会把「刚登录成功」误判成「还没通」。
+    """
+    # 短 TTL 缓存：窗口内复用上次结论，避免一次流程里多轮重复探测。
+    # 慢网下每轮都可能吃满 DNS/连接超时，是「测网络很慢」的主要来源。
+    ttl = _connect_cache_ttl()
+    now = time.monotonic()
+    if not force and ttl > 0 and now - _CONNECT_RESULT_CACHE["ts"] <= ttl:
+        cached = _CONNECT_RESULT_CACHE["value"]
+        logger.debug(f"Reuse cached connectivity result (ttl={ttl}s): {cached}")
+        return cached
+
+    logger.info("Starting connectivity probe...")
     urls = [target[0] for target in CONNECTIVITY_TARGETS]
     results = probe_many(urls)
 
@@ -362,12 +418,15 @@ def is_connect_by_sites() -> bool:
         )
 
     logger.info(f"Connectivity verdict: online={online} ({reason})")
+
+    _CONNECT_RESULT_CACHE["ts"] = time.monotonic()
+    _CONNECT_RESULT_CACHE["value"] = online
     return online
 
 
-def is_connect_by_google() -> bool:
+def is_connect_by_google(force: bool = False) -> bool:
     """Compatibility wrapper: now uses site-based probe instead of Google 204."""
-    return is_connect_by_sites()
+    return is_connect_by_sites(force=force)
 
 
 def get_query_string_by_url(url: str = "http://1.1.1.1", skip_connectivity_check: bool = False) -> str:
@@ -459,7 +518,7 @@ def get_query_string_by_url(url: str = "http://1.1.1.1", skip_connectivity_check
     if looks_like_portal(final_url):
          logger.info(f"直接定位到认证页面: {final_url}")
          qs = _extract_query_string_from_url(final_url)
-         if qs: 
+         if qs:
             qs_encoded = _encode_query_string_for_form(qs)
             return f"{final_url}|{qs_encoded}"
          else:
@@ -516,7 +575,7 @@ def get_query_string_by_url(url: str = "http://1.1.1.1", skip_connectivity_check
             logger.info(f"成功获取认证URL(meta): {meta_url}")
             # 返回格式: 完整URL|编码后的query_string
             return f"{meta_url}|{qs}"
-    
+
     # 尝试旧的解析方式（兼容旧格式）
     list_spilt = res_string.split("'")
     logger.debug(f"分割后的列表长度: {len(list_spilt)}")
@@ -531,7 +590,7 @@ def get_query_string_by_url(url: str = "http://1.1.1.1", skip_connectivity_check
             logger.info(f"成功获取 query string: {query_string}")
             return query_string
         else:
-            logger.error(f"URL 格式不正确，无法解析 query string")
+            logger.error("URL 格式不正确，无法解析 query string")
 
     logger.error("无法从响应中提取 query string")
     return ""

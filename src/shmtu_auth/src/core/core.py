@@ -174,7 +174,9 @@ class ShmtuNetAuthCore:
     def _confirm_login_success(self, stage: str) -> tuple[bool, str] | None:
         """Double check actual connectivity when portal responses are ambiguous."""
         try:
-            if check_is_connected_retry(retry_times=1, wait_time=0):
+            # force=True：连通性结果有短 TTL 缓存，这里复核的是**刚刚提交的登录**，
+            # 沿用缓存会把登录前的旧结论当成复核结果，让这层保护形同虚设。
+            if check_is_connected_retry(retry_times=1, wait_time=0, force=True):
                 logger.warning(
                     f"{stage} response looked failed, but connectivity is online now; treat as success."
                 )
