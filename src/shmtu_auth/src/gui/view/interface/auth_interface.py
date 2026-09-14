@@ -1,6 +1,6 @@
 from typing import List, Optional
 
-from PySide6.QtCore import Qt
+from PySide6.QtCore import Qt, QThread
 from PySide6.QtWidgets import QHBoxLayout, QLabel, QWidget
 from qfluentwidgets import (
     ExpandGroupSettingCard,
@@ -21,7 +21,7 @@ from shmtu_auth.src.gui.common.credential_bridge import (
     fetch_service_users,
     merge_service_users,
 )
-from shmtu_auth.src.gui.common.signal_bus import log_new, signal_bus
+from shmtu_auth.src.gui.common.signal_bus import auth_status_changed, log_new, signal_bus
 from shmtu_auth.src.gui.common.style_sheet import StyleSheet
 from shmtu_auth.src.gui.feature.network_auth import AuthThread
 from shmtu_auth.src.gui.view.components.fluent.widget_label import FBodyLabel
@@ -161,9 +161,19 @@ class AuthSettingWidget(ScrollArea):
         self.check_interval_card = InternetCheckSettingCard(cfg=cfg, parent=self.auth_group_general)
         self.auth_group_general.addSettingCard(self.check_interval_card)
 
+        # 手动测试认证服务：跑一次真实认证（账密 / 验证码 / 服务选择一次看全）
+        self.auth_test_card = PrimaryPushSettingCard(
+            text="认证",
+            icon=FIF.CERTIFICATE,
+            title="手动测试认证服务",
+            content="立即用用户列表中的账号执行一次认证（只跑一次，不影响后台服务）",
+        )
+        # 注意：信号连接将在AuthInterface中进行
+        self.auth_group_general.addSettingCard(self.auth_test_card)
+
         # 手动测试按钮
         self.manual_test_card = PrimaryPushSettingCard(
-            text="测试", icon=FIF.SYNC, title="手动测试", content="手动测试网络连接状态"
+            text="测试", icon=FIF.SYNC, title="手动测试网络连接状态", content="检查当前是否已联网（不需要认证）"
         )
         # 注意：信号连接将在AuthInterface中进行
         self.auth_group_general.addSettingCard(self.manual_test_card)
@@ -389,6 +399,12 @@ class AuthInterface(GalleryInterface):
 
     work_thread: Optional[AuthThread] = None
 
+    # 手动认证测试线程（一次性，跑完即弃）
+    _auth_test_worker: Optional[QThread] = None
+
+    # 旧线程还在退出时排队的「待启动账号」，退出后由 __on_work_thread_exited 接着启动
+    _pending_start_users: Optional[List[UserItem]] = None
+
     def __init__(self, parent=None, user_list: List[UserItem] = None):
         super().__init__(
             title="上海海事大学校园网自动认证",
@@ -406,6 +422,7 @@ class AuthInterface(GalleryInterface):
         self.vBoxLayout.addWidget(self.authSettingsWidget)
 
         self.authSettingsWidget.start_card.clicked.connect(self.__on_work_button_clicked)
+        self.authSettingsWidget.auth_test_card.clicked.connect(self.__on_manual_auth_test_clicked)
         self.authSettingsWidget.manual_test_card.clicked.connect(self.__on_manual_test_clicked)
         self.authSettingsWidget.reset_stats_card.clicked.connect(self.__on_reset_stats_clicked)
 
@@ -413,6 +430,7 @@ class AuthInterface(GalleryInterface):
         self.__connect_signals()
 
         self.current_status = False
+        self._pending_start_users = None
         self.set_auth_work_status(False)
 
         # 注意：不在这里自动启动，而是在MainWindow初始化完成后处理
@@ -563,16 +581,16 @@ class AuthInterface(GalleryInterface):
 
     def __do_start_auth_service_with_users(self, valid_users):
         """使用验证过的用户启动认证服务"""
-        try:
-            # 停止已有线程
-            if self.work_thread is not None:
-                if self.work_thread.is_alive():
-                    logger.info("停止现有认证线程...")
-                    self.work_thread.stop()
-                    self.work_thread.join(timeout=5)
-                self.work_thread = None
+        # 旧线程还在跑就先请求停止，把它退出后再启动 —— 认证线程可能正卡在一次
+        # 完整门户登录里（验证码最多重试 6 次），在界面线程 join 会冻住好几秒。
+        if self.work_thread is not None and self.work_thread.is_alive():
+            logger.info("检测到正在运行的认证线程，先停止它，退出后再用新账号启动")
+            self._pending_start_users = valid_users
+            self.__stop_auth_service()
+            return
 
-            # 创建新线程
+        try:
+            self.work_thread = None
             # 注意用 valid_users 而不是 self.user_list：前者可能已经并入了
             # 自建凭据服务返回的账号，后者只是界面上手填的那份。
             self.work_thread = AuthThread(
@@ -605,7 +623,7 @@ class AuthInterface(GalleryInterface):
             start_button.setEnabled(True)
 
     def __stop_auth_service(self):
-        """停止认证服务"""
+        """停止认证服务（异步等待线程退出，不阻塞界面）"""
         logger.info("准备停止认证服务...")
 
         # 禁用按钮，防止重复点击
@@ -613,24 +631,63 @@ class AuthInterface(GalleryInterface):
         if start_button:
             start_button.setEnabled(False)
 
-        if self.work_thread is not None:
-            if self.work_thread.is_alive():
-                logger.info("停止认证线程...")
-                self.work_thread.stop()
-                self.work_thread.join(timeout=5)
-            self.work_thread = None
+        thread = self.work_thread
+        if thread is None or not thread.is_alive():
+            self.__on_work_thread_exited()
+            return
 
+        # 只设停止标志。认证线程可能正卡在一次完整门户登录里（验证码最多重试 6 次），
+        # 原先在这里 join(timeout=5) 会把界面线程一起冻住最多 5 秒 —— 用户视角就是
+        # 「点了停止，程序卡死几秒」。改成用定时器异步等它自己退出。
+        logger.info("请求停止认证线程（异步等待退出）...")
+        thread.stop()
+        self.__wait_thread_stop_async(thread, self.__on_work_thread_exited)
+
+    def __wait_thread_stop_async(self, thread, on_stopped, timeout_ms: int = 15000):
+        """不阻塞界面线程地等线程结束，结束后回调 ``on_stopped``。"""
+        from time import monotonic
+
+        from PySide6.QtCore import QTimer
+
+        deadline = monotonic() + timeout_ms / 1000.0
+        timer = QTimer(self)
+        timer.setInterval(100)
+
+        def check():
+            if not thread.is_alive():
+                timer.stop()
+                timer.deleteLater()
+                on_stopped()
+                return
+            if monotonic() > deadline:
+                # 不再无限等：线程会在后台自己结束，界面先恢复可用
+                timer.stop()
+                timer.deleteLater()
+                logger.warning("认证线程未在预期时间内退出，界面不再等待（线程将在后台自行结束）")
+                on_stopped()
+
+        timer.timeout.connect(check)
+        timer.start()
+        check()
+
+    def __on_work_thread_exited(self):
+        """认证线程退出后的界面收尾；若有排队中的启动请求则接着启动。
+
+        注意与 ``__on_thread_stopped``（响应认证线程自己发的停止信号）区分：
+        这个方法是由界面侧的异步等待触发的，代表线程**已经真的退出**了。
+        """
+        self.work_thread = None
         self.current_status = False
         InfoBar.info("已停止", "认证服务已停止", duration=2000, parent=self)
         self.set_auth_work_status(self.current_status)
         self.__restore_start_button()
         logger.info(f"认证服务状态已更新：{self.current_status}")
 
-    def __restore_start_button(self):
-        """恢复启动按钮状态"""
-        start_button = getattr(self.authSettingsWidget.start_card, "button", None)
-        if start_button:
-            start_button.setEnabled(True)
+        pending = self._pending_start_users
+        if pending:
+            self._pending_start_users = None
+            logger.info("旧线程已退出，开始用排队中的账号启动认证服务")
+            self.__do_start_auth_service_with_users(pending)
 
     def set_auth_work_status(self, status: bool):
         """设置认证工作状态"""
@@ -698,12 +755,14 @@ class AuthInterface(GalleryInterface):
         if test_button:
             test_button.setEnabled(True)
 
+        # 走信号总线广播：主页状态卡、托盘、本页状态卡统一由这一个信号驱动，
+        # 避免「测出来一个结果，只有当前页面知道」。
+        auth_status_changed(is_connected)
+
         if is_connected:
             InfoBar.success("测试完成", "网络连接正常 ✓", duration=3000, parent=self)
-            self.authSettingsWidget.status_group.update_network_status(True)
         else:
             InfoBar.warning("测试完成", "网络连接异常，需要认证 ✗", duration=3000, parent=self)
-            self.authSettingsWidget.status_group.update_network_status(False)
 
     def __on_manual_test_error(self, error_msg: str):
         """手动测试出错回调"""
@@ -716,9 +775,75 @@ class AuthInterface(GalleryInterface):
 
         InfoBar.error("测试失败", f"测试过程中出现错误：{error_msg}", duration=3000, parent=self)
 
+    def __set_auth_test_button_enabled(self, enabled: bool):
+        button = getattr(self.authSettingsWidget.auth_test_card, "button", None)
+        if button:
+            button.setEnabled(enabled)
+
+    def __on_manual_auth_test_clicked(self):
+        """手动测试认证服务：用第一个有效账号跑一次完整认证。
+
+        与「手动测试网络连接状态」的区别：那个只回答「现在通不通网」，
+        这个会真的走一遍 index.jsp → pageInfo → 验证码 → 加密 → login，
+        所以能一次性验证账号密码、验证码识别、接入服务选择是否都正常。
+        """
+        worker = self._auth_test_worker
+        if worker is not None and worker.isRunning():
+            InfoBar.warning("测试进行中", "认证测试正在进行，请稍候...", duration=2000, parent=self)
+            return
+
+        if self.current_status:
+            # 后台服务也在周期认证，两边同时跑会互相干扰（同一账号重复登录）
+            InfoBar.warning(
+                "认证服务运行中",
+                "后台认证服务正在运行，本次测试结果可能与它相互影响。",
+                duration=4000,
+                parent=self,
+            )
+
+        from shmtu_auth.src.gui.utils.async_auth_test import SingleAuthTestWorker
+
+        self.__set_auth_test_button_enabled(False)
+        InfoBar.info(
+            "测试开始",
+            "正在执行一次认证（含验证码识别），请稍候...",
+            duration=2000,
+            parent=self,
+        )
+
+        self._auth_test_worker = SingleAuthTestWorker(self.user_list, parent=self)
+        self._auth_test_worker.test_finished.connect(self.__on_manual_auth_test_finished)
+        self._auth_test_worker.start()
+
+    def __on_manual_auth_test_finished(self, success: bool, user_id: str, message: str):
+        """手动认证测试结束"""
+        self.__set_auth_test_button_enabled(True)
+
+        if success:
+            logger.info(f"手动认证测试成功：{user_id}")
+            log_new("Auth", f"手动测试认证成功: {user_id}")
+            InfoBar.success(
+                "测试完成",
+                f"账号 {user_id} 认证成功 ✓\n{message}".strip(),
+                duration=4000,
+                parent=self,
+            )
+            # 认证成功说明网络已经通了：走总线同步主页/托盘/状态卡
+            auth_status_changed(True)
+            self.authSettingsWidget.status_group.update_last_auth_user(user_id)
+        else:
+            detail = message or "认证失败"
+            logger.warning(f"手动认证测试失败：{user_id or '-'} - {detail}")
+            log_new("Auth", f"手动测试认证失败: {user_id or '-'} - {detail}")
+            InfoBar.error("测试失败", detail, duration=6000, parent=self)
+
     def __on_reset_stats_clicked(self):
         """处理重置统计按钮点击"""
-        from qfluentwidgets import MessageBox, MessageBoxButton
+        # 注意：不要再 import MessageBoxButton —— 当前 qfluentwidgets 顶层已经不再导出它
+        # （`from qfluentwidgets import MessageBoxButton` 会直接 ImportError，
+        #  点这个按钮就只会看到异常）。MessageBox.exec() 在点「确定」时返回真值，
+        # 仓库里其它几处确认框也都是这么判断的。
+        from qfluentwidgets import MessageBox
 
         logger.info("用户点击重置统计按钮")
 
@@ -734,7 +859,7 @@ class AuthInterface(GalleryInterface):
         msg_box.cancelButton.setText("取消")
 
         # 显示对话框并处理结果
-        if msg_box.exec() == MessageBoxButton.YES:
+        if msg_box.exec():
             # 用户确认重置
             logger.info("用户确认重置统计数据")
             self.authSettingsWidget.status_group.reset_all_statistics()
@@ -761,6 +886,18 @@ class AuthInterface(GalleryInterface):
         if hasattr(self, "_network_test_manager"):
             self._network_test_manager.cleanup()
             self._network_test_manager = None
+
+        # 手动认证测试线程：登录阻塞没法中途打断，只标记取消并短暂等待
+        if self._auth_test_worker is not None:
+            if self._auth_test_worker.isRunning():
+                logger.debug("结束手动认证测试线程...")
+                self._auth_test_worker.cancel()
+                if not self._auth_test_worker.wait(3000):
+                    # 线程若还卡在网络请求里，程序正在退出，强制结束是安全的
+                    logger.warning("手动认证测试线程未能正常结束，强制终止")
+                    self._auth_test_worker.terminate()
+                    self._auth_test_worker.wait()
+            self._auth_test_worker = None
 
         # 清理用户验证管理器
         if hasattr(self, "_user_validation_manager"):
