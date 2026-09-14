@@ -1,6 +1,6 @@
 import os.path
 import pickle
-from typing import List
+from typing import List, Optional
 
 from PySide6.QtCore import Qt
 from PySide6.QtWidgets import QHBoxLayout, QWidget
@@ -47,6 +47,9 @@ class UserListInterface(GalleryInterface):
 
     user_list: List[UserItem]
     selected_index: List[int] = []
+
+    # 上一次弹出过的右键菜单。每次右键都会新建一个，得有人负责回收。
+    _context_menu: Optional[RoundMenu] = None
 
     def __init__(self, parent=None, user_list: List[UserItem] = None):
         super().__init__(
@@ -146,8 +149,15 @@ class UserListInterface(GalleryInterface):
     def __show_context_menu(self, pos):
         selected_items_count: int = self.table_widget.selected_items_count
 
+        # 上一张菜单这时已经关掉了，交给事件循环回收 —— 每次右键都新建一张、
+        # parent 又是本页，不主动回收就会一直攒着。
+        if self._context_menu is not None:
+            self._context_menu.close()
+            self._context_menu.deleteLater()
+
         # 生成右键菜单
         menu = RoundMenu(parent=self)
+        self._context_menu = menu
 
         action_create = Action(FIF.ADD, "新建")
         action_create.triggered.connect(self.__menu_action_create)
@@ -216,11 +226,17 @@ class UserListInterface(GalleryInterface):
 
         action_select_cancel.setEnabled(have_selected_item)
 
-        # pos.setX(pos.x() - int(menu.width() / 2))
-        # pos.setY(pos.y() - int(menu.height() / 2))
+        # 右键菜单的坐标基准必须是**表格自己的视口**。
+        #
+        # customContextMenuRequested 给的 pos 是「表格视口内的局部坐标」，
+        # 而这里原先写的是 self.mapToGlobal(pos)，self 是本页这个 ScrollArea ——
+        # 等于把表格局部坐标当成滚动区局部坐标去换算，偏差正好是表格在滚动区里的
+        # 位置（本页约 (36, 158)），而且窗口越往下滚偏差越大。
+        # 表现就是：菜单整体偏左偏上，鼠标落在菜单的中间偏下，怎么滚都对不齐。
+        global_pos = self.table_widget.viewport().mapToGlobal(pos)
 
         # 显示右键菜单
-        menu.exec(self.mapToGlobal(pos), ani=True)
+        menu.exec(global_pos, ani=True)
 
     def __start_docker_generate(self):
         w = ServerCountMessageBox(self.window())
