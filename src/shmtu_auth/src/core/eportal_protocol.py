@@ -223,7 +223,12 @@ class EPortalClient:
         """第 2 步：查询页面配置（验证码开关、RSA 公钥、加密开关）。"""
         payload = self._post_json(
             "pageInfo",
-            {"queryString": query_string},
+            # HAR 实测：pageInfo 线上字节是「单层编码」（queryString=wlanuserip%3D...%26mac%3D...），
+            # 即浏览器把 location.search 的**原始形态**交给表单编码一次的结果。
+            # 传已编码形态会被 requests 再编码一层（%253D），与浏览器不一致。
+            # 实测服务端对两种形态返回相同（它按会话/网关注入的参数处理），
+            # 但这里仍按浏览器字节对齐，避免依赖这种宽容。
+            {"queryString": unquote((query_string or "").lstrip("?"))},
             referer=self.index_url(query_string),
         )
         info = _parse_page_info(payload)

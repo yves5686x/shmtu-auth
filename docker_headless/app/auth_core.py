@@ -616,6 +616,11 @@ class HeadlessNetAuth:
         if not page_info.raw:
             return False, "pageInfo request failed"
 
+        # HAR 时序：pageInfo 之后、登录之前，浏览器会打一次
+        # `InterFace.do?method=getServices&queryString=...`，服务端据此把本会话可用的
+        # 接入服务绑定到会话上。之前漏了这一步；失败不影响登录，故不检查返回值。
+        client.query_services(query_string)
+
         if page_info.need_valid_code and not self._captcha_capable(captcha_provider):
             LOGGER.error("Portal requires a captcha but no OCR backend or manual input is available")
             return False, (

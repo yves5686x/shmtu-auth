@@ -394,3 +394,77 @@ def test_docker_index_and_search_use_raw_query_string():
         client2 = eportal_protocol.EPortalClient(session2)
         client2.query_account_service(ENCODED_QS, "u")
         assert session2.kwargs_sent[-1]["data"]["search"] == "?" + RAW_QS
+
+
+def test_page_info_uses_raw_query_string():
+    """HAR：pageInfo 线上字节是单层编码，即 ``data`` 值应为原始形态。
+
+    浏览器 pageInfo 的 body 是 ``queryString=wlanuserip%3D...%26mac%3D...``；
+    ``requests`` 拿到原始形态后编码一次，正好等于浏览器字节。若传已编码形态，
+    线上会变成 ``%253D``（多编码一层），与浏览器不一致。
+    """
+    session = FakeSession(FakeResponse(b'{"validCodeUrl": "/eportal/validcode?rnd=1"}'))
+    client = EPortalClient(session)
+    client.query_page_info(ENCODED_QS)
+
+    kwargs = session.kwargs_sent[-1]
+    assert kwargs["data"]["queryString"] == RAW_QS
+    assert "%3D" not in kwargs["data"]["queryString"]
+
+
+def test_docker_page_info_uses_raw_query_string():
+    with docker_app() as (eportal_protocol, _, _, _):
+        session = FakeSession(FakeResponse(b'{"validCodeUrl": "/eportal/validcode?rnd=1"}'))
+        client = eportal_protocol.EPortalClient(session)
+        client.query_page_info(ENCODED_QS)
+        assert session.kwargs_sent[-1]["data"]["queryString"] == RAW_QS
+
+
+def test_login_flow_calls_get_services_before_login():
+    """HAR 时序：pageInfo 之后、login 之前，浏览器会调 getServices 绑定会话服务。
+
+    ``query_services`` 用的正是这个接口（``InterFace.do?method=getServices&queryString=``），
+    漏掉它会让「本会话可用服务」没绑上，登录时 service 校验可能对不上。
+    """
+    session = FakeSession(FakeResponse(b"{}"))
+    client = EPortalClient(session)
+    client.query_services(ENCODED_QS)
+
+    method, url = session.requests_sent[-1]
+    assert method == "GET"
+    assert "method=getServices" in url
+    # URL 上的 queryString 保持「编码形态」（请求行里 %3D 不会被再编码）
+    assert "queryString=" + ENCODED_QS in url
+
+
+def test_login_payload_wire_bytes_match_har():
+    """登录 POST 的线上字节（HAR 实证）——把「编码几次」这个契约钉死。
+
+    | 位置                    | 传入值形态            | 线上字节                |
+    |-------------------------|-----------------------|-------------------------|
+    | index.jsp GET           | 原始                  | ``wlanuserip=...``      |
+    | pageInfo body           | 原始                  | ``wlanuserip%3D...``    |
+    | getServices URL         | 编码                  | ``wlanuserip%3D...``    |
+    | userV2 search           | ``"?" + 原始``        | ``%3Fwlanuserip%3D...`` |
+    | login.queryString       | 编码                  | ``wlanuserip%253D...``  |
+    | login.service (校园网)  | ``%E6%A0%A1%E5%9B%AD%E7%BD%91`` | ``%25E6%25A0...`` |
+
+    ``requests`` 提交 ``data=`` 时会再编码一次，所以除 index.jsp（URL 拼接）外，
+    传进去的值都要比线上字节「少编码一层」。
+    """
+    import urllib.parse
+
+    # service：门户 JS 对 net_access_type.value 做两次 encodeURIComponent，
+    # requests 再编码一次 ⇒ 我们只编码一次。
+    service = encode_service_param("校园网")
+    assert service == "%E6%A0%A1%E5%9B%AD%E7%BD%91"
+    assert urllib.parse.quote(service, safe="") == "%25E6%25A0%25A1%25E5%259B%25AD%25E7%25BD%2591"
+
+    # 无线是 ASCII，两次编码后仍是 iSMU（所以「有线失败、无线正常」不能证明 service 没错）
+    assert encode_service_param("iSMU") == "iSMU"
+    assert urllib.parse.quote("iSMU", safe="") == "iSMU"
+
+    # login.queryString：传入编码形态，requests 编码一次 ⇒ 线上双编码（与 HAR 一致）
+    wire = urllib.parse.quote(ENCODED_QS, safe="")
+    assert wire.startswith("wlanuserip%253D9660ce92")
+    assert "%2526mac%253D67d1ff70" in wire

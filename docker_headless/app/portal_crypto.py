@@ -13,12 +13,30 @@
 对 1024 位模数而言 ``biHighIndex = 63``，因此 ``chunkSize = 126``（而不是 128）。
 长字符串会被切成多个块，块之间用 **空格** 连接。
 
-加密的明文是 ``password + ">" + mac``，``mac`` 取自门户 URL 的 ``mac`` 参数，
-缺失时门户 JS 会退化成 ``"111111111"``。
+加密的**明文**是 ``reverse(password + ">" + mac)``，``mac`` 取自门户 URL 的 ``mac``
+参数，缺失时门户 JS 会退化成 ``"111111111"``。
 
-本实现已与门户 ``security.js`` 在 Node 中逐字节比对通过（ASCII 输入 19/19 通过，
-覆盖跨块边界长度）。非 ASCII 输入在原 JS 库中会因 ``charCodeAt`` 超过 16 位
-导致内部 BigInt 溢出，结果不再可用，此处不做兼容。
+⚠️ 那个 **reverse 极易漏掉**，因为 ``security.js`` 的 ``RSAUtils.encryptedString``
+本身并不反转，反转发生在调用它的包装函数里：
+
+* ``login_bch.js``： ``password = encryptedPassword(password + ">" + macString)``
+* ``AuthInterFace.js``： ::
+
+      function encryptedPassword(password){
+          var passwordEncode = password.split("").reverse().join("");
+          ...
+          RSAUtils.encryptedString(key, passwordEncode);
+      }
+
+（``index.jsp`` 内**没有**同名定义，所以生效的一定是 ``AuthInterFace.js`` 这一份，
+反转必然发生。门户 JS 原注释也写着「这里需要把字符串进行反转，不然加密的结果是错的」。）
+
+只拿 ``security.js`` 当 oracle 验证「填充算法」，会得到「不反转」也能逐字节自洽的
+错误结论 —— 那正是这个 bug 曾经潜伏下来的原因。生成期望值时必须带上这层包装，
+见 ``tools/portal_crypto_oracle.js``。
+
+非 ASCII 输入在原 JS 库中会因 ``charCodeAt`` 超过 16 位导致内部 BigInt 溢出，
+结果不再可用，此处不做兼容。
 """
 
 from typing import List
@@ -77,7 +95,16 @@ def encrypt_password(
     if chunk_size % 2 != 0:
         raise ValueError("invalid publicKeyModulus: chunkSize must be even")
 
+    # 明文 = reverse(password + ">" + mac)。
+    #
+    # login_bch.js 先把两者拼起来再调 encryptedPassword()，而 AuthInterFace.js 的
+    # encryptedPassword 会先 `password.split("").reverse().join("")` 才送进
+    # RSAUtils.encryptedString。RSAUtils 本身不反转，所以这一步必须由我们补上。
+    #
+    # 反转的是 JS 的 **UTF-16 码元序列**（split("")），不是 Unicode 码点，
+    # 所以先展开成码元再整体倒序，非 BMP 字符也能对上。
     units = _to_code_units(password + ">" + (mac or DEFAULT_MAC))
+    units.reverse()
 
     # JS: while (a.length % chunkSize != 0) a[i++] = 0;
     remainder = len(units) % chunk_size

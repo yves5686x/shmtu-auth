@@ -403,6 +403,13 @@ class ShmtuNetAuthCore:
         if not page_info.raw:
             return False, "pageInfo 请求失败，无法获取门户配置"
 
+        # HAR 时序：pageInfo 之后、登录之前，浏览器会打一次
+        # `InterFace.do?method=getServices&queryString=...`，服务端据此把「本会话可用
+        # 的接入服务」绑定到会话上。之前漏了这一步。它同时把门户下发的服务列表带回来，
+        # 只用于日志排查（选哪个 service 仍是两个都试，见 _portal_service_candidates）。
+        # 失败不影响登录，故不检查返回值。
+        client.query_services(query_string)
+
         if page_info.need_valid_code and not self._captcha_capable(captcha_provider):
             logger.error("Portal requires a captcha but no OCR backend or manual input is available")
             return False, (
