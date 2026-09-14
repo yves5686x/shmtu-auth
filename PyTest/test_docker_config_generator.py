@@ -80,7 +80,7 @@ def test_generated_env_contains_expected_variables(tmp_path):
     assert "SHMTU_AUTH_USER_PWD_202500000001=pwd-1" in content
     assert "SHMTU_AUTH_USER_PWD_202500000002=pwd-2" in content
     assert "SHMTU_MACHINE_NAME=machine_1" in content
-    assert "SHMTU_AUTH_CHECK_INTERVAL=" in content
+    assert "SHMTU_AUTH_TIME_INTERVAL=" in content
 
 
 def test_generated_env_variables_are_actually_read_by_docker_backend(tmp_path):
@@ -105,7 +105,7 @@ def test_generated_env_variables_are_actually_read_by_docker_backend(tmp_path):
     )
     env_text = (tmp_path / "machine_1" / ".env").read_text(encoding="utf-8")
 
-    for name in ("SHMTU_AUTH_USER_LIST", "SHMTU_MACHINE_NAME", "SHMTU_AUTH_CHECK_INTERVAL"):
+    for name in ("SHMTU_AUTH_USER_LIST", "SHMTU_MACHINE_NAME", "SHMTU_AUTH_TIME_INTERVAL"):
         assert name in env_text, f"{name} 没有写进生成的 .env"
         assert name in backend_src, f"{name} 写进了 .env，但 docker 后端并不读它"
 
