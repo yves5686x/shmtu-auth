@@ -60,6 +60,9 @@ class NetworkType:
         selected_types = []
         if binary_code & NetworkType.ChinaEdu:
             selected_types.append(NetworkType.ChinaEdu)
+        # iSMU 这一位原先漏了：位运算还原时会把「支持 iSMU」悄悄丢掉
+        if binary_code & NetworkType.iSMU:
+            selected_types.append(NetworkType.iSMU)
         if binary_code & NetworkType.ChinaMobile:
             selected_types.append(NetworkType.ChinaMobile)
         if binary_code & NetworkType.ChinaUnicom:

@@ -93,11 +93,19 @@ class UserInfoEditWidget(QWidget):
         self.input_password.setFixedWidth(input_width)
         self.input_password.setPlaceholderText("请输入密码")
 
+        # 两个都放开选。
+        #
+        # 原先 iSMU 写的是 enable: False，于是这一栏永远只能勾一个「校园网」——
+        # 但程序本身就是同时支持两者的（auth_user.program_support_list 是
+        # ["校园网", "iSMU"]，测试数据里也有 [校园网, iSMU] 的组合），
+        # 而且登录时后端已经改成「校园网 / iSMU 两个 service 依次都试」，
+        # 并不依赖这里的选择 —— 这一栏只是描述「这个账号能用在哪」。
+        # 多说一句：iSMU 是无线、校园网是有线，同一个账号通常在两种接入下都能用。
         self.checkbox_support_type = ListCheckboxWidgets(
             self,
             [
                 {"name": "校园网", "default": True},
-                {"name": "iSMU", "default": False, "enable": False},
+                {"name": "iSMU", "default": False},
             ],
         )
 
