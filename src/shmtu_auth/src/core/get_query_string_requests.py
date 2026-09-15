@@ -1,12 +1,13 @@
 import ipaddress
 import os
+import queue
 import re
 import socket
 import threading
 import time
 from concurrent.futures import ThreadPoolExecutor
 from typing import List, NamedTuple, Optional, Tuple
-from urllib.parse import urlparse
+from urllib.parse import urljoin, urlparse
 
 import requests
 
@@ -23,6 +24,11 @@ READ_TIMEOUT = 4     # 读取超时
 
 # 探测并发度。串行走 5 个地址最坏要 5×(2+4)=30 秒，慢到用户以为卡死。
 PROBE_WORKERS = 8
+PROBE_TOTAL_TIMEOUT = 8.0
+PROBE_BODY_LIMIT = 64 * 1024
+# requests 无法取消正在阻塞的系统 DNS 调用。限制遗留任务数量，防止多轮堆积。
+_PROBE_SLOTS = threading.BoundedSemaphore(PROBE_WORKERS)
+_DNS_SLOTS = threading.BoundedSemaphore(PROBE_WORKERS)
 
 # DNS 预检超时（秒）。见 probe_dns 的说明。
 DNS_TIMEOUT = 2
@@ -174,6 +180,8 @@ def _dns_resolve_one(host: str, timeout: float = DNS_TIMEOUT) -> Optional[bool]:
 
     所以放到 daemon 线程里跑，超时就放弃，不再干等。
     """
+    if not _DNS_SLOTS.acquire(blocking=False):
+        return None
     box: List[bool] = []
 
     def _worker() -> None:
@@ -182,6 +190,8 @@ def _dns_resolve_one(host: str, timeout: float = DNS_TIMEOUT) -> Optional[bool]:
             box.append(True)
         except Exception:  # noqa: BLE001
             box.append(False)
+        finally:
+            _DNS_SLOTS.release()
 
     worker = threading.Thread(target=_worker, daemon=True)
     worker.start()
@@ -208,71 +218,94 @@ def probe_many(
     connect_timeout: float = CONNECT_TIMEOUT,
     read_timeout: float = READ_TIMEOUT,
     dns_precheck: bool = True,
+    total_timeout: float = PROBE_TOTAL_TIMEOUT,
+    allow_redirects: bool = True,
 ) -> List[ProbeResult]:
-    """并发探测多个地址，返回结果**按输入顺序排列**。
+    """并发探测，整轮共享总时限，按输入顺序返回（超时项 status=0）。
 
-    串行探测在待认证状态下每个地址都要等到超时，5 个地址就是几十秒；
-    并发后总耗时取决于最慢的那一个。
-
-    ``dns_precheck`` 会先并发解析所有域名，解析**没能及时成功**的直接跳过
-    （记为 status=0），不再发起 HTTP 请求。这是提速的关键 —— 见
-    ``_dns_resolve_one`` 里那段说明，卡住的主要是 DNS 而不是连接本身。
-
-    「没能及时成功」包括解析失败和**解析超时（None）**两种：解析都卡住
-    的域名，后面 requests 内部的 getaddrinfo（没有超时、connect/read 管不着）
-    会把它再卡一次，所以必须连 None 一起跳过，才能把探测时长真正压住。
-
-    每个任务用独立 Session：requests 的 Session 不是线程安全的，
-    共享一个在并发下会偶发连接错乱。连接复用的收益远小于正确性。
+    requests 的 connect/read timeout 不约束系统 DNS、整个重定向链和
+    持续滴流响应。守护线程在总时限后不再阻塞调用方；信号量限制尚未结束
+    的底层请求数量。线程只往本轮队列交结果，迟到结果不会污染后续轮次。
     """
     urls = list(urls or [])
     if not urls:
         return []
-
-    # DNS 预检：解析不快的域名直接跳过，避免在 Windows 上干等几十秒
-    dead_hosts: set[str] = set()
-    if dns_precheck:
-        hosts = [urlparse(u).hostname or "" for u in urls]
-        need_dns = sorted({h for h in hosts if h and not _is_ip_literal(h)})
-        if need_dns:
-            dns_result = probe_dns(need_dns)
-            # ok 不是 True（即 False 或 None 超时）都跳过：见上面 docstring
-            dead_hosts = {h for h, ok in dns_result.items() if ok is not True}
-            if dead_hosts:
-                logger.debug(f"DNS 预检未通过，跳过这些域名: {sorted(dead_hosts)}")
-
-    slots: List[ProbeResult | None] = [None] * len(urls)
+    deadline = time.monotonic() + max(0.0, total_timeout)
+    completed = queue.Queue()
+    results = [ProbeResult(url=url) for url in urls]
+    slots = _PROBE_SLOTS
 
     def _one(index: int, url: str) -> None:
-        host = urlparse(url).hostname or ""
-        if host in dead_hosts:
-            slots[index] = ProbeResult(url=url, text="", status=0, final_url="")
-            return
-
-        session = requests.Session()
-        session.trust_env = False
+        result = ProbeResult(url=url)
+        session = None
         try:
-            response = session.get(
-                url, timeout=(connect_timeout, read_timeout)
-            )
-            response.encoding = response.apparent_encoding
-            slots[index] = ProbeResult(
-                url=url,
-                text=response.text or "",
-                status=response.status_code,
-                final_url=response.url,
-            )
-        except Exception as e:  # noqa: BLE001
-            logger.debug(f"Probe failed: {url} -> {type(e).__name__}: {e}")
-            slots[index] = ProbeResult(url=url, text="", status=0, final_url="")
+            host = urlparse(url).hostname or ""
+            remaining = deadline - time.monotonic()
+            if remaining <= 0:
+                return
+            if dns_precheck and host and not _is_ip_literal(host):
+                if _dns_resolve_one(host, min(DNS_TIMEOUT, remaining)) is not True:
+                    return
+            remaining = deadline - time.monotonic()
+            if remaining <= 0:
+                return
+            session = requests.Session()
+            session.trust_env = False
+            session.max_redirects = 3
+            with session.get(
+                url, timeout=(min(connect_timeout, remaining), min(read_timeout, remaining)),
+                stream=True, allow_redirects=allow_redirects,
+            ) as response:
+                body = bytearray()
+                for chunk in response.iter_content(chunk_size=4096):
+                    if time.monotonic() >= deadline:
+                        return
+                    body.extend(chunk[:PROBE_BODY_LIMIT - len(body)])
+                    if len(body) >= PROBE_BODY_LIMIT:
+                        break
+                text = bytes(body).decode(response.encoding or "utf-8", errors="replace")
+                final_url = response.url
+                if not allow_redirects and 300 <= response.status_code < 400:
+                    final_url = urljoin(response.url, response.headers.get("Location", ""))
+                result = ProbeResult(url, text, response.status_code, final_url)
+        except Exception as exc:  # noqa: BLE001
+            logger.debug(f"Probe failed: {url} -> {type(exc).__name__}: {exc}")
         finally:
-            session.close()
+            try:
+                if session is not None:
+                    session.close()
+            finally:
+                slots.release()
+                completed.put((index, result))
 
-    with ThreadPoolExecutor(max_workers=min(len(urls), PROBE_WORKERS)) as pool:
-        for index, url in enumerate(urls):
-            pool.submit(_one, index, url)
+    pending = 0
+    for index, url in enumerate(urls):
+        if time.monotonic() >= deadline:
+            break
+        if not slots.acquire(blocking=False):
+            logger.warning(f"探测任务仍在等待底层网络返回，跳过本轮目标: {url}")
+            continue
+        worker = threading.Thread(target=_one, args=(index, url), daemon=True)
+        try:
+            worker.start()
+        except Exception:
+            slots.release()
+            raise
+        pending += 1
 
-    return [item for item in slots if item is not None]
+    while pending:
+        remaining = deadline - time.monotonic()
+        if remaining <= 0:
+            break
+        try:
+            index, result = completed.get(timeout=remaining)
+        except queue.Empty:
+            break
+        results[index] = result
+        pending -= 1
+    if pending:
+        logger.warning(f"整轮探测达到 {total_timeout:g} 秒时限，{pending} 个未完成目标按未通过处理")
+    return results
 
 
 def get_text_code(url: str, timeout: float = READ_TIMEOUT) -> Tuple[str, int, str]:
@@ -552,9 +585,9 @@ def get_query_string_by_url(url: str = "http://1.1.1.1", skip_connectivity_check
     try:
         redirect_location = ""
         # 这里不改 get_text_code 的签名，直接再探测一次 header
-        r = _get_session().get(url, allow_redirects=False, timeout=(CONNECT_TIMEOUT, 3))
-        if 300 <= r.status_code < 400:
-            redirect_location = r.headers.get("Location", "")
+        r = probe_many([url], read_timeout=3, allow_redirects=False)[0]
+        if 300 <= r.status < 400:
+            redirect_location = r.final_url
         if redirect_location:
             logger.debug(f"检测到 HTTP 重定向 Location: {redirect_location}")
             qs = _extract_query_string_from_url(redirect_location)

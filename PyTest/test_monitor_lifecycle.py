@@ -43,6 +43,7 @@ def end_round(interval):
     if rounds == 2:
         raise SystemExit(0)
 
+auth_status.check_is_connected = FakeAuth().check_is_online
 auth_status.ShmtuNetAuth = FakeAuth
 auth_status.time_sleep = end_round
 runpy.run_module("shmtu_auth", run_name="__main__")

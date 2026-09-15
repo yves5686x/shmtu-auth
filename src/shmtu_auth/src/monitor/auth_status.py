@@ -1,6 +1,7 @@
 from time import sleep as time_sleep
 
 from shmtu_auth.src.core.shmtu_auth import ShmtuNetAuth
+from shmtu_auth.src.core.core_exp import check_is_connected
 from shmtu_auth.src.utils.env import get_env_int
 from shmtu_auth.src.utils.logs import get_logger
 from shmtu_auth.src.utils.program_env_config import (
@@ -43,7 +44,7 @@ def monitor_auth(user_list_3=None):
 
     while True:
         logger.info("Checking network status...")
-        is_online = net_auth.check_is_online()
+        is_online = check_is_connected()
         if not is_online:
             logger.info("Network offline, trying to login...")
             if net_auth.login_by_list(user_list_3):
