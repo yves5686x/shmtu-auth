@@ -45,7 +45,7 @@ def test_local_and_remote_passwords_preserve_literal_value(monkeypatch, password
 
 
 def test_missing_accounts_exit_before_monitor_or_network(monkeypatch):
-    monkeypatch.setattr(auth_status.threading, "Thread", lambda **kw: pytest.fail("must not start"))
+    monkeypatch.setattr(auth_status, "monitor_auth", lambda *args: pytest.fail("must not start"))
     with pytest.raises(SystemExit) as result:
         auth_status.start_monitor_auth()
     assert result.value.code == 1

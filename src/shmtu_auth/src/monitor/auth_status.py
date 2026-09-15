@@ -1,4 +1,3 @@
-import threading
 from time import sleep as time_sleep
 
 from shmtu_auth.src.core.shmtu_auth import ShmtuNetAuth
@@ -59,14 +58,10 @@ def monitor_auth(user_list_3=None):
 
 
 def start_monitor_auth():
+    """CLI 在主线程持续监控，避免入口返回后解释器提前关闭线程池。"""
     users = get_user_list()
     if not users:
         logger.error("No valid accounts configured. Set SHMTU_AUTH_USER_LIST and matching passwords.")
         raise SystemExit(1)
 
-    logger.info("Create Thread")
-    t = threading.Thread(target=monitor_auth, args=(users,))
-    logger.info("Created Thread")
-    logger.info("Start Thread")
-    t.start()
-    logger.info("Thread Started.")
+    monitor_auth(users)
