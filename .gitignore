@@ -1,4 +1,7 @@
-!/Build/
+# Build 产物（PyInstaller 输出、安装包、构建日志），Build/ 下的构建脚本正常入库
+/Build/Output/
+/Build/installer/
+build_log*.txt
 
 gui_config.json
 
