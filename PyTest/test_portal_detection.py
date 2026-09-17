@@ -87,19 +87,40 @@ class TestSplitAuthResult:
 
 
 class TestManualQueryString:
-    """手动指定时必须完全跳过自动探测。"""
+    """手动指定的定位是「自动探测抓不到时的兜底」。
 
-    def test_manual_value_skips_probing(self, monkeypatch):
+    自动探测每次拿的都是当前网络的实时参数（t=/mac 有时效性），常驻进程
+    拿手动串当主力会在第一次失效后永久坏掉；探测失败的环境才是手动串
+    唯一起作用的地方。
+    """
+
+    def test_probe_result_wins_over_manual(self, monkeypatch):
+        """探测抓得到时，必须用新鲜的探测结果，不能偷懒用手动串。"""
         import shmtu_auth.src.core.core_exp as core_exp
 
         monkeypatch.setattr(core_exp, "get_manual_query_string", lambda: NEW_PORTAL)
         monkeypatch.setattr(
-            core_exp,
-            "get_query_string_by_url",
-            lambda *a, **k: pytest.fail("配了手动 queryString 就不该再发起探测"),
+            core_exp, "get_query_string_by_url", lambda *a, **k: "wlanuserip=1.2.3.4&mac=aa"
         )
 
+        assert core_exp.get_query_string() == "wlanuserip=1.2.3.4&mac=aa"
+
+    def test_manual_used_when_probing_finds_nothing(self, monkeypatch):
+        """探测返回空时才退回手动指定。"""
+        import shmtu_auth.src.core.core_exp as core_exp
+
+        monkeypatch.setattr(core_exp, "get_manual_query_string", lambda: NEW_PORTAL)
+        monkeypatch.setattr(core_exp, "get_query_string_by_url", lambda *a, **k: "")
+
         assert core_exp.get_query_string() == NEW_PORTAL
+
+    def test_no_probe_no_manual_returns_default(self, monkeypatch):
+        import shmtu_auth.src.core.core_exp as core_exp
+
+        monkeypatch.setattr(core_exp, "get_manual_query_string", lambda: "")
+        monkeypatch.setattr(core_exp, "get_query_string_by_url", lambda *a, **k: "")
+
+        assert core_exp.get_query_string() == ""
 
 
 
@@ -330,7 +351,6 @@ class TestPublicApiStillExists:
         "judge_connectivity",
         "looks_like_portal",
         "is_connect_by_sites",
-        "is_connect_by_google",
         "get_query_string_by_url",
         "get_query_string_by_baidu",
         "ProbeResult",

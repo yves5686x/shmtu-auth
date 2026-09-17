@@ -112,6 +112,11 @@ class ShmtuNetAuthCore:
         # 不会改变"两个都试"的语义（见 _portal_service_candidates）。
         self._last_ok_service: str = ""
         self.session = requests.Session()  # 复用连接
+        # 与探测 Session（get_query_string_requests）保持一致，必须绕过系统代理：
+        # 未认证状态下代理够不到门户（ismu.shmtu.edu.cn:8443 走外网代理直接失败），
+        # 而探测环节已经绕过代理看到了「离线 + 门户劫持」，两套行为不一致的话
+        # 表现就是「检测一直报离线，登录却永远失败且错误信息看不出和代理有关」。
+        self.session.trust_env = False
 
         env_ua = get_env_str("SHMTU_AUTH_USER_AGENT", "")
         if env_ua != "":
@@ -509,6 +514,8 @@ class ShmtuNetAuthCore:
             logger.info(f"Start H3C fallback login flow, entry: {entry_url}")
 
             session = requests.Session()
+            # 同 _login_eportal：绕过系统代理，理由见 __init__ 中的注释
+            session.trust_env = False
             headers = {
                 "User-Agent": (
                     "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "

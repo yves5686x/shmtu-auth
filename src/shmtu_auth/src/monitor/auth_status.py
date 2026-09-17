@@ -47,10 +47,30 @@ def monitor_auth(user_list_3=None):
         is_online = check_is_connected()
         if not is_online:
             logger.info("Network offline, trying to login...")
-            if net_auth.login_by_list(user_list_3):
-                logger.info("Login success.")
-            else:
-                logger.error("Login failed.")
+
+            # 登录前重取一次账号列表：凭据服务的账号可能已轮换（TTL 过期 / 停用），
+            # 常驻进程若永远用启动时那份列表，轮换后会拿旧账号无限重试。
+            # 本地环境变量配置时这只是一次 env 读取；凭据服务自带 TTL 缓存，不贵。
+            # 失败不致命：列表为空就沿用现有列表。
+            # 注意这里不 try 探测本身 —— check_is_connected 抛异常要炸出来（有
+            # 回归测试钉住这个语义，见 PyTest/test_monitor_lifecycle.py）。
+            try:
+                refreshed_users = get_user_list()
+                if len(refreshed_users) > 0:
+                    user_list_3 = refreshed_users
+            except Exception as e:  # noqa: BLE001
+                logger.warning(f"刷新账号列表失败，沿用现有列表: {e}")
+
+            try:
+                if net_auth.login_by_list(user_list_3):
+                    logger.info("Login success.")
+                else:
+                    logger.error("Login failed.")
+            except Exception as e:  # noqa: BLE001
+                # 登录流程里的任何意外（门户响应解析、凭据服务等）都不允许
+                # 杀死监控循环 —— 常驻工具的全部价值就在「下一轮还能再试」。
+                # 探测、sleep 等环节的异常仍然穿透，让编程错误保持可见。
+                logger.exception(f"Login flow crashed unexpectedly: {e}")
         else:
             logger.info("Network is online, no action needed.")
 

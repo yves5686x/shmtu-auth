@@ -457,11 +457,6 @@ def is_connect_by_sites(force: bool = False) -> bool:
     return online
 
 
-def is_connect_by_google(force: bool = False) -> bool:
-    """Compatibility wrapper: now uses site-based probe instead of Google 204."""
-    return is_connect_by_sites(force=force)
-
-
 def get_query_string_by_url(url: str = "http://1.1.1.1", skip_connectivity_check: bool = False) -> str:
     """获取认证URL和query string。
 

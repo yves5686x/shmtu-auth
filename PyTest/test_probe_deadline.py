@@ -72,7 +72,10 @@ def test_stalled_probe_returns_on_deadline_and_bounds_workers(monkeypatch, stage
 def test_cli_attempts_login_after_one_failed_probe(monkeypatch):
     calls = []
     users = [("123", "synthetic-password", False)]
-    class StopTest(Exception):
+    # 逃逸 monitor_auth 死循环用的控制流异常。必须是 BaseException：
+    # monitor_auth 的登录流程现在有「异常不杀监控循环」的兜底（只放行
+    # 探测环节的异常），普通 Exception 会被兜底吞掉，逃不出循环。
+    class StopTest(BaseException):
         pass
     class Auth:
         def check_is_online(self):

@@ -1,3 +1,5 @@
+import time
+
 from shmtu_auth.src.config.config_global import env_from_global
 from shmtu_auth.src.core.credential_provider import resolve_credentials
 from shmtu_auth.src.core.device_id import detect_device_mac, format_mac
@@ -39,15 +41,39 @@ def resolve_device_mac() -> str:
     return identity.mac
 
 
+# 凭据远端请求的刷新节流（秒）。
+#
+# monitor 每轮离线登录前都会调 get_user_list()，而 resolve_credentials
+# 每次都是**真实的网络请求**（没有客户端 TTL 缓存）。不节流的话：
+# 服务挂掉时每一轮（默认 10s）都要白等一次 (3+8)s 超时、刷一条告警、
+# 写一次缓存文件。这里限制真实远端请求的频率，窗口内直接复用上次结果
+# （成功与失败都算一次尝试——挂掉的服务同样不能每轮去敲）。
+CREDENTIAL_REMOTE_REFRESH_INTERVAL = 300.0
+
+# ts 用 -inf：见 get_query_string_requests 里对 time.monotonic() 的说明
+_CREDENTIAL_REMOTE_CACHE: dict = {"ts": float("-inf"), "list": None}
+
+
 def get_user_list_from_service():
     """向自建凭据服务按设备号换账号密码。
 
     没配 ``SHMTU_AUTH_CREDENTIAL_URL`` 时返回空列表（走本地配置，不算错误）。
     服务返回的 ``service`` / ``machine`` 写进全局配置，优先级高于 TOML 与环境变量。
+
+    远端请求按 :data:`CREDENTIAL_REMOTE_REFRESH_INTERVAL` 节流；窗口内
+    直接复用上次结果。取不到时回退本地缓存（在 resolve_credentials 内部），
+    再不行返回空列表、由 get_user_list 落回本地配置。
     """
     url = get_credential_service_url()
     if not url:
         return []
+
+    now = time.monotonic()
+    if (
+        _CREDENTIAL_REMOTE_CACHE["list"] is not None
+        and now - _CREDENTIAL_REMOTE_CACHE["ts"] < CREDENTIAL_REMOTE_REFRESH_INTERVAL
+    ):
+        return _CREDENTIAL_REMOTE_CACHE["list"]
 
     mac = resolve_device_mac()
     bundle, note = resolve_credentials(
@@ -57,9 +83,11 @@ def get_user_list_from_service():
         cache_path=get_env_str("SHMTU_AUTH_CREDENTIAL_CACHE", DEFAULT_CREDENTIAL_CACHE),
         verify=not _env_flag("SHMTU_AUTH_CREDENTIAL_INSECURE", False),
     )
+    _CREDENTIAL_REMOTE_CACHE["ts"] = now
 
     if bundle is None:
         logger.warning(f"Credential service unusable: {note}")
+        _CREDENTIAL_REMOTE_CACHE["list"] = []
         return []
 
     if note:
@@ -72,7 +100,9 @@ def get_user_list_from_service():
     if bundle.machine:
         env_from_global["SHMTU_MACHINE_NAME"] = bundle.machine
 
-    return [(item["id"], item["password"], False) for item in bundle.users]
+    users = [(item["id"], item["password"], False) for item in bundle.users]
+    _CREDENTIAL_REMOTE_CACHE["list"] = users
+    return users
 
 
 def get_user_num_list():

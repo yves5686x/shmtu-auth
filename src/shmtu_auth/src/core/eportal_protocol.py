@@ -186,13 +186,21 @@ class EPortalClient:
 
     def _post_json(self, method: str, data: Dict, referer: str = "") -> Dict:
         url = self._interface_url(method)
-        res = self.session.post(
-            url,
-            data=data,
-            headers=self._browser_headers(referer),
-            verify=False,
-            timeout=(CONNECT_TIMEOUT, READ_TIMEOUT),
-        )
+        try:
+            res = self.session.post(
+                url,
+                data=data,
+                headers=self._browser_headers(referer),
+                verify=False,
+                timeout=(CONNECT_TIMEOUT, READ_TIMEOUT),
+            )
+        except Exception as e:
+            # pageInfo / login 是登录主链路上最暴露于网络的请求，瞬时抖动
+            # （连接被重置、读超时）在这里抛异常会一路穿透到 monitor 循环把
+            # 进程杀掉。这里降级成空 dict：调用方按「门户没给有效响应」处理，
+            # login 的 _confirm_login_success 复核 / 下一轮监控都能兜住。
+            logger.warning(f"{method} request failed: {e}")
+            return {}
         text = self._response_text(res)
         try:
             return json.loads(text)
