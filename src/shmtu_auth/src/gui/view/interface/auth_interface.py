@@ -110,14 +110,14 @@ class InternetCheckSettingCard(ExpandGroupSettingCard):
 
         self.check_internet_retry_times_slider = self.SettingGroupSliderWithText(self.cfg.check_internet_retry_times, self)
         self.add(
-            FBodyLabel("联网失败后的探测次数（1 = 不重试）", self),
+            FBodyLabel("登录失败后的重试轮数（1 = 不重试）", self),
             self.check_internet_retry_times_slider,
         )
 
         self.check_internet_retry_wait_time_slider = self.SettingGroupSliderWithText(
             self.cfg.check_internet_retry_wait_time, self
         )
-        self.add(FBodyLabel("两次探测之间的等待时间", self), self.check_internet_retry_wait_time_slider)
+        self.add(FBodyLabel("登录失败后的重试间隔（秒）", self), self.check_internet_retry_wait_time_slider)
 
     def __restore_default(self):
         self.check_internet_interval_slider.restore_default_value()
