@@ -1,4 +1,5 @@
 import os
+import sys
 
 from shmtu_auth.src.config.data_directory import get_data_path
 
@@ -31,6 +32,12 @@ def get_running_directory() -> str:
 
 
 def get_directory_base_path() -> str:
+    # PyInstaller 打包后 __file__ 在临时解压目录（onefile 每次启动还会换），
+    # 往上退 4 层找到的是 Temp 里的随机目录 —— 日志 / 用户数据写进去，
+    # 进程一退出就没了。冻结运行时一律以 exe 所在目录为基准，数据才能留存。
+    if getattr(sys, "frozen", False):
+        return os.path.dirname(os.path.abspath(sys.executable))
+
     if gui_mode:
         return get_data_path(project_name)
 
