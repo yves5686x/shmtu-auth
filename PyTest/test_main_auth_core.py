@@ -54,6 +54,8 @@ def make_fake_portal_client(page_info_cls):
             self.fetched_urls = []
             self.submitted = []
             self.page_info_calls = 0
+            self.page_info_urls = []
+            self.page_info_raws = []
             self.valid_code_url = "/eportal/validcode?rnd=1"
             self.password_encrypt = True
             self.images = {}
@@ -73,13 +75,15 @@ def make_fake_portal_client(page_info_cls):
 
         def query_page_info(self, query_string):
             self.page_info_calls += 1
+            if self.page_info_urls:
+                self.valid_code_url = self.page_info_urls.pop(0)
             # need_valid_code 由 valid_code_url 是否为空决定，与真实实现一致
             return page_info_cls(
                 valid_code_url=self.valid_code_url,
                 password_encrypt=self.password_encrypt,
                 public_key_modulus=MODULUS,
                 public_key_exponent="10001",
-                raw={"ok": True},
+                raw=self.page_info_raws.pop(0) if self.page_info_raws else {"ok": True},
             )
 
         def fetch_valid_code(self, valid_code_url):
@@ -263,6 +267,105 @@ def test_portal_without_validcode_still_works(env, monkeypatch):
     assert (ok, msg) == (True, "Login Success (Portal)")
     assert client.fetched_urls == []
     assert client.submitted[-1]["validcode"] == ""
+
+
+def test_no_captcha_does_not_load_ocr_backend(env, monkeypatch):
+    plan(valid_code_url="")
+    monkeypatch.setattr(env["auth_core"], "get_available_solvers", lambda: pytest.fail("不需要验证码时不探测 OCR"))
+    monkeypatch.setattr(env["auth_core"], "solve_captcha", lambda image: pytest.fail("不需要验证码时不识别图片"))
+    assert env["auth"]._login_eportal(USER, PASSWORD, QUERY_STRING)[0]
+
+
+def test_captcha_required_after_plain_login_uses_same_session(env, monkeypatch):
+    use_ocr(env, monkeypatch, "8291")
+    monkeypatch.setenv("SHMTU_AUTH_CAPTCHA_MAX_RETRY", "1")
+    plan(valid_code_url="", login_responses=[
+        {"result": "fail", "message": "请输入验证码", "validCodeUrl": "/eportal/validcode?rnd=2"},
+        SUCCESS,
+    ])
+    assert env["auth"]._login_eportal(USER, PASSWORD, QUERY_STRING)[0]
+    client = env["client"]()
+    assert len(CREATED) == 1
+    assert client.session is env["auth"].session
+    assert [p["validcode"] for p in client.submitted] == ["", "8291"]
+    assert client.fetched_urls == ["/eportal/validcode?rnd=2"]
+    assert client.submitted[0]["password"] == client.submitted[1]["password"]
+    assert client.submitted[0]["service"] == client.submitted[1]["service"]
+
+
+def test_captcha_required_after_plain_login_refreshes_info_and_uses_gui(env, monkeypatch):
+    no_ocr(env, monkeypatch)
+    no_ocr_backend(env, monkeypatch)
+    plan(page_info_urls=["", "/eportal/validcode?rnd=2"], login_responses=[
+        {"result": "fail", "message": "验证码错误"}, SUCCESS,
+    ])
+    images = []
+    def manual(image):
+        images.append(image)
+        return "1234"
+    assert env["auth"]._login_eportal(USER, PASSWORD, QUERY_STRING, captcha_provider=manual)[0]
+    assert images == [FAKE_IMAGE]
+    assert env["client"]().page_info_calls == 2
+
+
+def test_dynamic_captcha_without_backend_fails_before_empty_submission(env, monkeypatch):
+    no_ocr_backend(env, monkeypatch)
+    plan(valid_code_url="", fallback_login={
+        "result": "fail", "message": "验证码错误", "validCodeUrl": "/eportal/validcode?rnd=2",
+    })
+    ok, message = env["auth"]._login_eportal(USER, PASSWORD, QUERY_STRING)
+    assert not ok and "OCR" in message
+    assert len(env["client"]().submitted) == 1
+    assert env["client"]().fetched_urls == []
+
+
+def test_captcha_disappears_during_retry(env, monkeypatch):
+    use_ocr(env, monkeypatch)
+    plan(page_info_urls=["/eportal/validcode?rnd=1", ""], login_responses=[
+        {"result": "fail", "message": "验证码错误"}, SUCCESS,
+    ])
+    assert env["auth"]._login_eportal(USER, PASSWORD, QUERY_STRING)[0]
+    assert [p["validcode"] for p in env["client"]().submitted] == ["1234", ""]
+    assert len(env["client"]().fetched_urls) == 1
+
+
+def test_dynamic_captcha_attempts_remain_bounded(env, monkeypatch):
+    use_ocr(env, monkeypatch)
+    monkeypatch.setenv("SHMTU_AUTH_CAPTCHA_MAX_RETRY", "2")
+    plan(valid_code_url="", fallback_login={
+        "result": "fail", "message": "验证码错误", "validCodeUrl": "/eportal/validcode?rnd=2",
+    })
+    ok, message = env["auth"]._login_eportal(USER, PASSWORD, QUERY_STRING)
+    assert not ok and "验证码连续 2 次未通过" in message
+    assert len(env["client"]().submitted) == 3  # 一次无验证码 + 两次带验证码
+    assert len(env["client"]().fetched_urls) == 2
+
+
+def test_flapping_captcha_state_cannot_loop_forever(env, monkeypatch):
+    use_ocr(env, monkeypatch)
+    plan(page_info_urls=["", "/code", "", "/code", ""],
+         fallback_login={"result": "fail", "message": "验证码错误"})
+    assert not env["auth"]._login_eportal(USER, PASSWORD, QUERY_STRING)[0]
+    assert len(env["client"]().submitted) == 4
+
+
+def test_password_error_does_not_trigger_captcha_retry(env, monkeypatch):
+    monkeypatch.setenv("SHMTU_AUTH_PORTAL_SERVICE", "iSMU")
+    plan(valid_code_url="", fallback_login={
+        "result": "fail", "message": "密码错误", "validCodeUrl": "/code",
+    })
+    assert env["auth"]._login_eportal(USER, PASSWORD, QUERY_STRING) == (False, "密码错误")
+    assert len(env["client"]().submitted) == 1
+    assert env["client"]().fetched_urls == []
+
+
+def test_failed_page_info_is_not_treated_as_captcha_disabled(env, monkeypatch):
+    plan(valid_code_url="", page_info_raws=[{"ok": True}, {}],
+         fallback_login={"result": "fail", "message": "验证码错误"})
+    ok, message = env["auth"]._login_eportal(USER, PASSWORD, QUERY_STRING)
+    assert not ok and "无法确认验证码状态" in message
+    assert len(env["client"]().submitted) == 1
+    assert env["client"]().fetched_urls == []
 
 
 def test_empty_query_string_is_rejected(env):

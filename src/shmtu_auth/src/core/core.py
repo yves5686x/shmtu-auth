@@ -299,17 +299,26 @@ class ShmtuNetAuthCore:
         captcha_provider: CaptchaProvider | None = None,
     ) -> tuple[bool, str]:
         """针对单个 ``service`` 跑完整的「取验证码 → 识别 → 提交」重试循环。"""
-        max_attempts = 1
-        if page_info.need_valid_code:
-            configured = get_env_int("SHMTU_AUTH_CAPTCHA_MAX_RETRY", DEFAULT_CAPTCHA_MAX_RETRY)
-            max_attempts = max(1, configured or DEFAULT_CAPTCHA_MAX_RETRY)
+        configured = get_env_int("SHMTU_AUTH_CAPTCHA_MAX_RETRY", DEFAULT_CAPTCHA_MAX_RETRY)
+        max_attempts = max(1, configured or DEFAULT_CAPTCHA_MAX_RETRY)
+        captcha_attempts = 0
+        plain_attempts = 0
 
         last_message = ""
         unrecognized = 0
 
-        for attempt in range(1, max_attempts + 1):
+        while True:
             valid_code = ""
             if page_info.need_valid_code:
+                if captcha_attempts >= max_attempts:
+                    break
+                if not self._captcha_capable(captcha_provider):
+                    return False, (
+                        "门户要求图形验证码，但当前环境既没有可用的 OCR 后端，也没有人工输入通道；"
+                        "无 GUI 环境请安装 OCR 依赖（pip install -r requirements.txt）"
+                    )
+                captcha_attempts += 1
+                attempt = captcha_attempts
                 # 每次 fetch 服务端都会换一张新图，所以重试是真的换了个验证码
                 image = client.fetch_valid_code(page_info.valid_code_url)
                 if not image:
@@ -327,6 +336,12 @@ class ShmtuNetAuthCore:
                     continue
 
                 logger.info(f"Login attempt {attempt}/{max_attempts} with validcode, service={service}")
+            else:
+                # 初始直接提交一次；服务器取消验证码后允许再直接提交一次。
+                # 两类尝试独立计数，状态反复变化也不会无限重试。
+                if plain_attempts >= 2:
+                    return False, last_message
+                plain_attempts += 1
 
             payload = {
                 "userId": user,
@@ -360,15 +375,16 @@ class ShmtuNetAuthCore:
             if not is_valid_code_error(last_message):
                 return False, last_message
 
-            # 验证码被服务端拒绝：换新图重试
-            logger.warning(f"Valid code rejected: {last_message}")
+            # 服务器可能在首次提交后才要求验证码，或在重试时取消验证码。
+            logger.warning(f"验证码状态需要重新确认: {last_message}")
             refreshed = str(result.get("validCodeUrl") or "").strip()
             if refreshed:
                 page_info.valid_code_url = refreshed
             else:
-                page_info = client.query_page_info(query_string)
-                if not page_info.need_valid_code:
-                    return False, last_message
+                refreshed_info = client.query_page_info(query_string)
+                if not refreshed_info.raw:
+                    return False, "pageInfo 请求失败，无法确认验证码状态"
+                page_info.valid_code_url = refreshed_info.valid_code_url
 
         if unrecognized == max_attempts:
             return False, f"验证码连续 {max_attempts} 次未能识别，请检查 OCR 后端是否可用"
@@ -414,13 +430,6 @@ class ShmtuNetAuthCore:
         # 只用于日志排查（选哪个 service 仍是两个都试，见 _portal_service_candidates）。
         # 失败不影响登录，故不检查返回值。
         client.query_services(query_string)
-
-        if page_info.need_valid_code and not self._captcha_capable(captcha_provider):
-            logger.error("Portal requires a captcha but no OCR backend or manual input is available")
-            return False, (
-                "门户要求图形验证码，但当前环境既没有可用的 OCR 后端，也没有人工输入通道；"
-                "无 GUI 环境请安装 OCR 依赖（pip install -r requirements-ocr.txt）"
-            )
 
         mac = self._extract_mac(query_string)
         if mac == DEFAULT_MAC:
