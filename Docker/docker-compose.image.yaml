@@ -1,0 +1,17 @@
+# 拉取 GitHub Actions 构建的镜像，服务器不需要本地构建。
+services:
+  shmtu-auth:
+    image: ${SHMTU_AUTH_IMAGE:-ghcr.io/yves5686x/shmtu-auth:feat-portal-captcha}
+    container_name: shmtu-auth
+    restart: unless-stopped
+    network_mode: host
+    env_file:
+      - .env
+    volumes:
+      - ./logs:/app/logs
+      - ./data:/app/data
+    logging:
+      driver: json-file
+      options:
+        max-size: 10m
+        max-file: '3'

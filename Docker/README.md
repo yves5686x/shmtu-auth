@@ -15,6 +15,32 @@ Docker/
 
 ## 快速开始
 
+### 使用 GitHub 自动构建的镜像
+
+推送 Docker 或主包代码到 GitHub 后，`Build and publish Docker image` 工作流会自动构建
+并测试 Linux amd64 / arm64 镜像，通过后发布到 `ghcr.io/yves5686x/shmtu-auth`。
+不需要设置 Docker Hub 或阿里云密码。也可在 Actions 页面手动运行工作流。
+
+当前开发分支的标签为 `feat-portal-captcha`；默认分支构建成功后会更新 `latest`。
+每次构建还提供 `sha-<提交短哈希>` 标签，方便固定版本。
+
+```bash
+cd Docker
+cp .env.example .env
+# 编辑 .env，填写账号密码
+docker compose -f docker-compose.image.yaml pull
+docker compose -f docker-compose.image.yaml up -d
+docker compose -f docker-compose.image.yaml logs -f
+```
+
+以后升级只需重新执行 `pull` 和 `up -d`，无需在服务器上编译。
+可在 `.env` 中设置 `SHMTU_AUTH_IMAGE=ghcr.io/yves5686x/shmtu-auth:latest` 切换标签。
+
+GHCR 首次创建的包可能是 Private。要让服务器免登录拉取，在 GitHub 包页面的
+Package settings 中将 Visibility 改为 Public；保留 Private 则需要先登录 GHCR。
+
+### 从源码本地构建
+
 ```bash
 cd Docker
 cp .env.example .env
