@@ -14,7 +14,7 @@ docker run -d --name shmtu-auth --network host --restart unless-stopped \
 docker logs shmtu-auth
 ```
 
-首次日志会显示一次「网页初始管理密码」。打开 `http://宿主机IP:8080`，用这个管理密码
+首次日志会显示一次「网页初始管理密码」。打开 `http://宿主机IP:18888`，用这个管理密码
 登录，在网页填写学号与校园网密码，点击「保存并应用」。还没有账号时容器会等待设置。
 保存后自动认证，不需要重启容器；网页也能查看当前状态、添加删除账号和修改管理密码。
 
@@ -23,7 +23,7 @@ docker logs shmtu-auth
 `accounts.json` 并重启容器。不要删除数据卷，重建容器时继续挂载同一个卷。
 
 网页通过 HTTP 在本机或可信局域网使用，不要直接暴露公网；跨不可信网络请配 HTTPS
-反向代理或使用 SSH 隧道。端口冲突时添加 `-e SHMTU_AUTH_WEB_PORT=8081`。
+反向代理或使用 SSH 隧道。端口冲突时添加 `-e SHMTU_AUTH_WEB_PORT=18889`。
 可设置 `SHMTU_AUTH_WEB_HOST=127.0.0.1` 仅允许宿主机访问。
 
 其他设置：

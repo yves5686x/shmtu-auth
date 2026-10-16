@@ -167,7 +167,7 @@ def start():
     state = RuntimeState()
     app = create_app(state)
     host = os.environ.get("SHMTU_AUTH_WEB_HOST", "0.0.0.0")
-    port = int(os.environ.get("SHMTU_AUTH_WEB_PORT", "8080"))
+    port = int(os.environ.get("SHMTU_AUTH_WEB_PORT", "18888"))
     server = create_server(app, host=host, port=port, threads=4,
                            max_request_body_size=64 * 1024, channel_timeout=30)
     worker = threading.Thread(target=server.run, name="account-web", daemon=True)

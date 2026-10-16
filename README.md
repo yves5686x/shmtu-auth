@@ -72,7 +72,7 @@ docker run -d --name shmtu-auth --network host --restart unless-stopped \
 docker logs shmtu-auth
 ```
 
-打开 `http://宿主机IP:8080`，用首次日志中的管理密码登录后填写学号和密码。
+打开 `http://宿主机IP:18888`，用首次日志中的管理密码登录后填写学号和密码。
 保存后自动生效，数据卷用于保留账号和管理密码。详见 [网页设置说明](Docker/README.md)。
 
 ```bash

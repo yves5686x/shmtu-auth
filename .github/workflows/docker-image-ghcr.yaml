@@ -89,7 +89,7 @@ jobs:
           import urllib.request
           jar = http.cookiejar.CookieJar()
           client = urllib.request.build_opener(urllib.request.HTTPCookieProcessor(jar))
-          base = 'http://127.0.0.1:8080'
+          base = 'http://127.0.0.1:18888'
           for attempt in range(30):
               try:
                   with client.open(base + '/api/session', timeout=2) as result:
