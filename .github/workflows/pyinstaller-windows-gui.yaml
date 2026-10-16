@@ -70,7 +70,7 @@ jobs:
           $exe = Join-Path $testDir 'shmtu_auth_gui.exe'
           Copy-Item Build/Output/onefile/shmtu_auth_gui.exe $exe
           $report = Join-Path $testDir 'smoke-result.json'
-          $env:QT_QPA_PLATFORM = 'offscreen'
+          $env:QT_QPA_PLATFORM = 'windows'
           $process = Start-Process -FilePath $exe -ArgumentList '--smoke-test', ('"' + $report + '"') -WorkingDirectory $env:RUNNER_TEMP -PassThru
           if (-not $process.WaitForExit(120000)) {
             $process.Kill()

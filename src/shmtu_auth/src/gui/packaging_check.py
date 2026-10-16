@@ -9,7 +9,7 @@ from unittest.mock import patch
 def run(output_directory):
     import ddddocr
     from PIL import Image
-    from PySide6.QtGui import QIcon
+    from PySide6.QtGui import QIcon, QRawFont
     from PySide6.QtWidgets import QApplication
 
     from shmtu_auth.src.config.project_directory import get_directory_base_path
@@ -32,6 +32,7 @@ def run(output_directory):
     cfg.auth_auto_start_work_thread.value = False
     cfg.check_update_at_start_up.value = False
     app = QApplication([])
+    assert QRawFont.fromFont(app.font()).supportsCharacter("A"), "Windows fonts are unavailable"
     with patch.object(settings_interface, "get_github_branches", return_value=["main"]), \
             patch.object(SystemTray, "start_initial_network_probe"):
         window = MainWindow()
@@ -51,4 +52,4 @@ def run(output_directory):
     finally:
         window.force_quit()
         app.processEvents()
-    return {"ok": True, "checks": ["gui", "qt-resources", "ocr-model", "account-persistence", "exe-data-directory"]}
+    return {"ok": True, "checks": ["gui", "windows-fonts", "qt-resources", "ocr-model", "account-persistence", "exe-data-directory"]}
