@@ -64,6 +64,17 @@ OCR 识别 → RSA 加密密码 → 提交 → 轮询保持在线。适用于有
 
 Docker 使用主包 CLI，与 GUI 共用认证核心，包含验证码 OCR。
 
+直接拉镜像后可在浏览器设置账号：
+
+```bash
+docker run -d --name shmtu-auth --network host --restart unless-stopped \
+  -v shmtu-auth-data:/app/data ghcr.io/yves5686x/shmtu-auth:feat-portal-captcha
+docker logs shmtu-auth
+```
+
+打开 `http://宿主机IP:8080`，用首次日志中的管理密码登录后填写学号和密码。
+保存后自动生效，数据卷用于保留账号和管理密码。详见 [网页设置说明](Docker/README.md)。
+
 ```bash
 cd Docker
 cp .env.example .env      # 编辑 .env，填学号密码

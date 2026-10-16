@@ -5,8 +5,13 @@ services:
     container_name: shmtu-auth
     restart: unless-stopped
     network_mode: host
+    # 账号可直接在网页填写；下面的空默认值支持不创建 .env 就启动。
+    environment:
+      SHMTU_AUTH_WEB: ${SHMTU_AUTH_WEB:-true}
+      SHMTU_AUTH_USER_LIST: ${SHMTU_AUTH_USER_LIST:-}
     env_file:
-      - .env
+      - path: .env
+        required: false
     volumes:
       - ./logs:/app/logs
       - ./data:/app/data

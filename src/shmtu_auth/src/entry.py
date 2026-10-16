@@ -48,7 +48,11 @@ def entry():
 
     logger.info("Program Start.")
 
-    auth_status.start_monitor_auth()
+    if os.environ.get("SHMTU_AUTH_WEB", "").lower() in ("1", "true", "yes", "on"):
+        from shmtu_auth.src.web.server import start
+        start()
+    else:
+        auth_status.start_monitor_auth()
 
 
 if __name__ == "__main__":

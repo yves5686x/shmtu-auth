@@ -1,0 +1,41 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>SHMTU · 账号设置</title><link rel="stylesheet" href="/static/style.css">
+  <script src="/static/app.js" defer></script>
+</head>
+<body>
+  <main>
+    <header><div class="mark" aria-hidden="true">S</div><div><span class="eyebrow">SHMTU AUTH</span><h1>校园网，自动连上。</h1></div></header>
+    <p class="intro">管理这台设备的认证账号，连接交给程序。</p>
+    <p id="notice" role="status" aria-live="polite"></p>
+    <section id="login-panel" class="card" hidden>
+      <h2>进入设置</h2><p>首次启动的管理密码可在 <code>docker logs shmtu-auth</code> 中查看。这是网页管理密码，与学号密码不同。</p>
+      <form id="login-form"><label for="admin-password">管理密码</label><input id="admin-password" type="password" autocomplete="current-password" required maxlength="512">
+        <button type="submit">登录设置页 <span aria-hidden="true">→</span></button></form>
+    </section>
+    <div id="settings-panel" hidden>
+      <section class="connection"><div><span class="eyebrow">当前连接</span><p id="network-status">正在获取状态…</p></div><span id="status-dot" class="dot" aria-hidden="true"></span></section>
+      <section class="card">
+        <div class="section-head"><div><h2>认证账号</h2><p>按顺序尝试，任一账号成功后停止。</p></div><button id="add-user" class="secondary" type="button">＋ 添加账号</button></div>
+        <form id="accounts-form"><div id="users"></div><p id="empty-users" class="empty" hidden>还没有账号。添加学号和密码，保存后即可开始自动认证。</p>
+          <p class="hint">已有账号的密码留空即可保留；填写新密码会覆盖原密码。</p>
+          <div class="actions"><button id="save" type="submit">保存并应用</button><span>保存后自动生效，无需重启容器。</span></div>
+        </form>
+      </section>
+      <section class="card">
+        <h2>管理密码</h2><p>可将初始管理密码换成自己熟悉的密码。</p>
+        <form id="password-form" class="password-grid"><label>当前管理密码<input id="current-password" type="password" autocomplete="current-password" required></label>
+          <label>新管理密码<input id="new-password" type="password" autocomplete="new-password" minlength="12" maxlength="512" required placeholder="至少 12 个字符"></label>
+          <button type="submit" class="secondary">更新管理密码</button></form>
+      </section>
+      <button id="logout" class="text-button" type="button">退出登录</button>
+    </div>
+    <footer>SHMTU AUTH <span>本机账号设置 · 无需外部服务</span></footer>
+  </main>
+  <template id="user-template"><div class="user-row"><label>学号<input class="user-id" inputmode="numeric" pattern="[0-9]{1,32}" maxlength="32" autocomplete="off" required placeholder="输入学号"></label>
+    <label>校园网密码<input class="user-password" type="password" autocomplete="new-password" maxlength="512" placeholder="输入密码"></label>
+    <button class="remove secondary" type="button" aria-label="删除此账号">删除</button></div></template>
+</body>
+</html>

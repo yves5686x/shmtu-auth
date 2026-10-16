@@ -11,3 +11,7 @@ loguru
 # 对本门户的「4 位橙色数字」验证码命中率很高。缺了不会崩，只是降级成人工手输。
 # 注意：它依赖 onnxruntime，安装体积会增加约几十 MB。
 ddddocr
+
+# Docker 账号设置网页
+Flask>=3.1,<4
+waitress>=3,<4

@@ -71,12 +71,46 @@ jobs:
         run: |
           docker run --rm --entrypoint python shmtu-auth:ci -c 'import ddddocr; from shmtu_auth.src.core.core import ShmtuNetAuthCore; ddddocr.DdddOcr(show_ad=False); print("OCR model and authentication imports OK")'
           set +e
-          docker run --rm shmtu-auth:ci > cli-startup.log 2>&1
+          docker run --rm -e SHMTU_AUTH_WEB=false shmtu-auth:ci > cli-startup.log 2>&1
           status=$?
           set -e
           cat cli-startup.log
           test "$status" -eq 1
           grep -q 'No valid accounts configured' cli-startup.log
+
+      - name: Verify web setup without campus accounts
+        run: |
+          docker run -d --name shmtu-web-ci -e SHMTU_AUTH_WEB_PASSWORD=ci-settings-passphrase-12345 shmtu-auth:ci
+          trap 'docker logs shmtu-web-ci; docker rm -f shmtu-web-ci' EXIT
+          docker exec -i shmtu-web-ci python - <<'PY'
+          import http.cookiejar
+          import json
+          import time
+          import urllib.request
+          jar = http.cookiejar.CookieJar()
+          client = urllib.request.build_opener(urllib.request.HTTPCookieProcessor(jar))
+          base = 'http://127.0.0.1:8080'
+          for attempt in range(30):
+              try:
+                  with client.open(base + '/api/session', timeout=2) as result:
+                      assert not json.load(result)['authenticated']
+                  break
+              except OSError:
+                  if attempt == 29:
+                      raise
+                  time.sleep(1)
+          request = urllib.request.Request(base + '/api/login', data=json.dumps({'password': 'ci-settings-passphrase-12345'}).encode(), headers={'Content-Type': 'application/json'})
+          with client.open(request, timeout=5) as response:
+              csrf = json.load(response)['csrf']
+          with client.open(base + '/api/accounts', timeout=5) as response:
+              assert json.load(response) == {'users': []}
+          request = urllib.request.Request(base + '/api/accounts', data=b'{"users": []}', headers={'Content-Type': 'application/json', 'X-CSRF-Token': csrf})
+          with client.open(request, timeout=5) as response:
+              assert json.load(response)['ok']
+          with client.open(base + '/api/status', timeout=5) as response:
+              assert json.load(response)['phase'] == 'waiting'
+          print('Web login, account persistence, and waiting monitor OK')
+          PY
 
       - name: Log in to GitHub Container Registry
         uses: docker/login-action@c94ce9fb468520275223c153574b00df6fe4bcc9 # v3

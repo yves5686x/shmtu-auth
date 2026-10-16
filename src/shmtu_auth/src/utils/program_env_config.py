@@ -126,6 +126,10 @@ def get_user_pwd(user_num):
 
 def get_user_list():
     """取认证用的账号列表：先问自建凭据服务，拿不到再回退本地配置。"""
+    from shmtu_auth.src.utils.account_store import read_accounts
+    saved = read_accounts()
+    if saved is not None:
+        return saved
     remote_list = get_user_list_from_service()
     if len(remote_list) > 0:
         return remote_list

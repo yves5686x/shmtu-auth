@@ -28,6 +28,8 @@ dependencies = [
   # 门户已强制要求图形验证码，无弹窗环境（CLI / Docker）必须靠它自动识别。
   # 缺了不会崩，只是降级成人工手输；依赖 onnxruntime，安装体积增加约几十 MB。
   "ddddocr",
+  "Flask>=3.1,<4; python_version >= '3.9'",
+  "waitress>=3,<4; python_version >= '3.9'",
 ]
 description = "上海海事大学校园网自动认证工具"
 dynamic = ["version"]
@@ -47,6 +49,9 @@ where = ["src"]
 
 [tool.setuptools.package-dir]
 "" = "src"
+
+[tool.setuptools.package-data]
+"shmtu_auth.src.web" = ["static/*"]
 
 [tool.setuptools.dynamic]
 version = {attr = "shmtu_auth.__version__"}

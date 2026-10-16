@@ -5,6 +5,7 @@ LABEL maintainer="Haomin Kong" \
       description="SHMTU Campus Network Auto Auth"
 
 ENV DOCKER_MODE="1" \
+    SHMTU_AUTH_WEB="true" \
     PYTHONDONTWRITEBYTECODE=1 \
     PYTHONUNBUFFERED=1 \
     PYTHONPATH="/app/src" \
