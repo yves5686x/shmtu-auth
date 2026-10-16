@@ -36,6 +36,12 @@ jobs:
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
 
+      - name: Validate Compose configurations without an env file
+        run: |
+          docker compose -f Docker/docker-compose.yaml config --quiet
+          docker compose -f Docker/docker-compose.image.yaml config --quiet
+          docker compose -f Docker/docker-compose.build.yaml config --quiet
+
       - name: Set image name and build information
         id: image
         env:

@@ -76,8 +76,7 @@ docker run -d --name shmtu-auth --network host --restart unless-stopped \
 
 ```bash
 cd Docker
-cp .env.example .env      # 编辑 .env，填学号密码
-docker compose up -d --build
+docker compose up -d      # 首次自动拉取镜像，账号在网页填写
 docker compose logs -f
 docker compose ps
 docker compose down
@@ -85,7 +84,7 @@ docker compose down
 
 账号和运行参数见 [Docker/.env.example](Docker/.env.example)。密码应使用单引号包裹，
 避免 `$`、`#` 被 Compose 解释；GUI 导出的配置会自动处理。
-日志保存到 `./logs`，凭据缓存保存到 `./data`。Docker 使用 `.env`，不需要复制 TOML 模板。
+日志保存到 `./logs`，账号与管理设置保存到 `./data`。`.env` 为可选配置，不需要复制 TOML 模板。
 GUI 生成多机配置后，请确认每台服务器上的 `build.context` 指向该服务器的源码仓库。
 
 > 完整的 Docker 部署说明（配置逐项解释、host 网络原因、运维命令、故障排查）

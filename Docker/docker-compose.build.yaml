@@ -1,0 +1,24 @@
+# 本地源码构建：docker compose -f docker-compose.build.yaml up -d --build
+services:
+  shmtu-auth:
+    build:
+      context: ..
+      dockerfile: Docker/Dockerfile
+    image: shmtu-auth:local
+    container_name: shmtu-auth
+    restart: unless-stopped
+    # 需要 host 网络才能看到宿主的物理网卡（设备号），门户认证的设备标识才自洽
+    network_mode: host
+    volumes:
+      - ./logs:/app/logs
+      - ./data:/app/data
+    # 配置都写在同目录的 .env 里（从同目录的 .env.example 复制）
+    env_file:
+      - path: .env
+        required: false
+    # 日志配置
+    logging:
+      driver: "json-file"
+      options:
+        max-size: "10m"
+        max-file: "3"

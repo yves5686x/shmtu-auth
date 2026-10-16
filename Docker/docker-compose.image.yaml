@@ -2,6 +2,7 @@
 services:
   shmtu-auth:
     image: ${SHMTU_AUTH_IMAGE:-ghcr.io/yves5686x/shmtu-auth:feat-portal-captcha}
+    pull_policy: missing
     container_name: shmtu-auth
     restart: unless-stopped
     network_mode: host

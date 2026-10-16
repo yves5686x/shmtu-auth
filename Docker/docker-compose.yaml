@@ -1,22 +1,24 @@
+# 默认直接使用已编译镜像：docker compose up -d
+# 拉取 GitHub Actions 构建的镜像，服务器不需要本地构建。
 services:
   shmtu-auth:
-    build:
-      context: ..
-      dockerfile: Docker/Dockerfile
-    image: shmtu-auth:local
+    image: ${SHMTU_AUTH_IMAGE:-ghcr.io/yves5686x/shmtu-auth:feat-portal-captcha}
+    pull_policy: missing
     container_name: shmtu-auth
     restart: unless-stopped
-    # 需要 host 网络才能看到宿主的物理网卡（设备号），门户认证的设备标识才自洽
     network_mode: host
+    # 账号可直接在网页填写；下面的空默认值支持不创建 .env 就启动。
+    environment:
+      SHMTU_AUTH_WEB: ${SHMTU_AUTH_WEB:-true}
+      SHMTU_AUTH_USER_LIST: ${SHMTU_AUTH_USER_LIST:-}
+    env_file:
+      - path: .env
+        required: false
     volumes:
       - ./logs:/app/logs
       - ./data:/app/data
-    # 配置都写在同目录的 .env 里（从同目录的 .env.example 复制）
-    env_file:
-      - .env
-    # 日志配置
     logging:
-      driver: "json-file"
+      driver: json-file
       options:
-        max-size: "10m"
-        max-file: "3"
+        max-size: 10m
+        max-file: '3'
