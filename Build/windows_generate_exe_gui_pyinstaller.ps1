@@ -45,6 +45,11 @@ Write-Host "PyInstaller: $python"
 Write-Host "Mode       : $Mode"
 Write-Host "Building the executable..."
 
+# Qt 的 Python 资源文件是生成文件，干净 checkout 中并不存在。
+& (Join-Path (Split-Path $python) "pyside6-rcc.exe") `
+    Assets/Qt/resources.qrc -o src/shmtu_auth/src/gui/resource/resources.py
+if ($LASTEXITCODE -ne 0) { throw "Qt resource compilation failed" }
+
 & $python `
     --noconfirm --clean `
     --$Mode --windowed `
@@ -52,6 +57,8 @@ Write-Host "Building the executable..."
     --paths src `
     --icon "$icon" `
     --collect-all ddddocr `
+    --collect-all onnxruntime `
+    --collect-data qfluentwidgets `
     --exclude-module scipy `
     --exclude-module tkinter `
     --distpath "Build/Output/$Mode" `
@@ -64,7 +71,7 @@ if ($LASTEXITCODE -ne 0) {
     exit 1
 }
 
-Write-Host "Executable is located at $repoRoot\Build\Output\$Mode\shmtu_auth_gui"
+Write-Host "Executable is located at $repoRoot\Build\Output\$Mode\shmtu_auth_gui.exe"
 if ($Mode -eq "onedir") {
     Write-Host "把 Build\Output\onedir\shmtu_auth_gui 整个文件夹拷到目标电脑即可运行。"
 }

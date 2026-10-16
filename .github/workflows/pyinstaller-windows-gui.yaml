@@ -1,86 +1,107 @@
-name: PyInstaller Build GUI exe on Windows
+name: Build Windows GUI exe
 
 on:
   push:
-    branches:
-      - main
-    tags:
-      - "v*"
+    branches: ['**']
+    tags: ['v*']
+    paths:
+      - 'src/shmtu_auth/**'
+      - 'Assets/Qt/**'
+      - 'Assets/Icon/**'
+      - 'Build/windows_generate_exe_gui_pyinstaller.ps1'
+      - 'Build/Windows-README.txt'
+      - 'pyproject.toml'
+      - '.github/workflows/pyinstaller-windows-gui.yaml'
   workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: windows-gui-${{ github.ref }}
+  cancel-in-progress: true
 
 jobs:
   build:
-    runs-on: windows-latest
-    # runs-on: windows-2022
-
+    name: Build and test Windows x64
+    runs-on: windows-2022
+    timeout-minutes: 30
+    defaults:
+      run:
+        shell: pwsh
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
 
-      - name: Initialize MSVC Dev Environment
-        uses: TheMrMilchmann/setup-msvc-dev@v3
+      - uses: actions/setup-python@v5
         with:
-          arch: x64
+          python-version: '3.12'
+          cache: pip
+          cache-dependency-path: pyproject.toml
 
-      - name: List Downlevel Directories
+      - name: Install GUI and packaging dependencies
         run: |
-          # C:\Windows\System32\downlevel
-          ls C:\Windows\System32\downlevel
-          ls "C:\Program Files (x86)\Windows Kits\10\Redist\ucrt\DLLs\x64"
+          python -m pip install --upgrade pip
+          python -m pip install '.[gui]' 'pyinstaller>=6,<7'
 
-          # Append to PATH
-          $env:PATH += ";C:\Windows\System32\downlevel;C:\Program Files (x86)\Windows Kits\10\Redist\ucrt\DLLs\x64"
-          echo $env:PATH
+      - name: Record build information
+        env:
+          BUILD_BRANCH: ${{ github.ref_name }}
+        run: |
+          @'
+          import os
+          import re
+          from datetime import datetime, timezone
+          from pathlib import Path
+          path = Path('src/shmtu_auth/src/config/build_info.py')
+          source = path.read_text(encoding='utf-8')
+          timestamp = datetime.now(timezone.utc).isoformat(timespec='seconds')
+          source = re.sub(r'^exe_build_time = .*$', lambda m: f'exe_build_time = {timestamp!r}', source, flags=re.M)
+          source = re.sub(r'^branch = .*$', lambda m: f'branch = {os.environ["BUILD_BRANCH"]!r}', source, flags=re.M)
+          path.write_text(source, encoding='utf-8')
+          '@ | python -
 
-      - name: Set up Python
-        uses: actions/setup-python@v5
+      - name: Build standalone exe including OCR models
+        run: ./Build/windows_generate_exe_gui_pyinstaller.ps1 -Mode onefile
+
+      - name: Test packaged GUI from a different working directory
+        run: |
+          $testDir = Join-Path $env:RUNNER_TEMP '桌面测试'
+          New-Item -ItemType Directory -Force $testDir | Out-Null
+          $exe = Join-Path $testDir 'shmtu_auth_gui.exe'
+          Copy-Item Build/Output/onefile/shmtu_auth_gui.exe $exe
+          $report = Join-Path $testDir 'smoke-result.json'
+          $env:QT_QPA_PLATFORM = 'offscreen'
+          $process = Start-Process -FilePath $exe -ArgumentList '--smoke-test', ('"' + $report + '"') -WorkingDirectory $env:RUNNER_TEMP -PassThru
+          if (-not $process.WaitForExit(120000)) {
+            $process.Kill()
+            throw 'Packaged GUI did not finish its startup check within 120 seconds'
+          }
+          if (Test-Path $report) { Get-Content $report }
+          if ($process.ExitCode -ne 0 -or -not (Test-Path $report)) { throw 'Packaged GUI startup check failed' }
+          $result = Get-Content $report -Raw | ConvertFrom-Json
+          if (-not $result.ok) { throw 'Packaged GUI checks failed' }
+
+      - name: Prepare portable download
+        run: |
+          Copy-Item Build/Windows-README.txt Build/Output/onefile/README.txt
+          Copy-Item LICENSE Build/Output/onefile/LICENSE.txt
+          Copy-Item shmtu-auth-GUI-License.txt Build/Output/onefile/
+
+      - name: Upload Windows app
+        uses: actions/upload-artifact@v4
         with:
-          python-version: 3.13
+          name: shmtu-auth-windows-x64
+          path: Build/Output/onefile/
+          if-no-files-found: error
+          retention-days: 30
 
-      - name: Setup NSIS
-        uses: MinoruSekine/setup-scoop@v4
+      - name: Upload startup diagnostics
+        if: always()
+        uses: actions/upload-artifact@v4
         with:
-          buckets: extras
-          apps: nsis
-
-      - name: Check Version Setting
-        run: |
-          python --version
-          pip --version
-          python version.py
-
-      - name: Set Build Info
-        run: |
-          pip install pytz
-          python Build/set_build_info.py -e
-
-      - name: Install dependencies
-        run: |
-          # pip install -r requirements.txt
-          # pip install -r r-gui-requirements.txt
-          # pip install -r r-dev-requirements.txt
-          python install.py all
-
-      - name: Install PyInstaller
-        run: pip install pyinstaller
-
-      - name: Build GUI EXE with PyInstaller
-        run: . .\Build\windows_generate_exe_gui.ps1
-
-      - name: (INNO)Compile .ISS to .EXE Installer
-        uses: Minionguyjpro/Inno-Setup-Action@v1.2.2
-        with:
-          path: Build/windows-setup-inno-shmtu-auth-gui.iss
-          options: /O+
-
-      - name: (NSIS)Compile .NSIS to .EXE Installer
-        run: |
-          makensis .\Build\windows-setup-nsis-shmtu-auth-gui.nsi
-
-      - name: Create Release
-        id: create_release
-        uses: softprops/action-gh-release@v2
-        if: startsWith(github.ref, 'refs/tags/')
-        with:
-          files: |
-            ./Build/Output/Windows/INNO/setup-inno-shmtu-auth-gui.exe
-            ./Build/Output/Windows/NSIS/setup-nsis-shmtu-auth-gui.exe
+          name: windows-gui-diagnostics
+          path: |
+            ${{ runner.temp }}/桌面测试/smoke-result.json
+            ${{ runner.temp }}/桌面测试/gui-smoke.png
+            ${{ runner.temp }}/桌面测试/logs/
+          if-no-files-found: ignore

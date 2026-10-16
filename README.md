@@ -115,12 +115,34 @@ shmtu-auth
 
 ### 方式三：GUI 桌面版
 
+Windows 10/11（64 位）可以直接使用预编译 exe，**无需安装 Python 或 Docker**：
+
+1. 打开 [Windows 构建列表](https://github.com/yves5686x/shmtu-auth/actions/workflows/pyinstaller-windows-gui.yaml)，选择对应分支最近一次成功的构建。
+2. 在页面底部 Artifacts 下载 `shmtu-auth-windows-x64`，解压到桌面等可写目录。
+3. 双击 `shmtu_auth_gui.exe`，在“账号列表”添加账号并保存，在“认证”页面启动服务。
+
+exe 同目录的 `data`、`config`、`logs` 保存账号、设置和日志；更新 exe 时保留这些目录。
+桌面版直接在窗口内操作，无需网页管理密码。关闭窗口默认隐藏到托盘，可从托盘菜单退出。
+构建包含验证码 OCR 模型，并在 Windows 上验证打包后的界面、图片资源、OCR 推理和账号保存。
+GitHub Actions 的下载需要登录 GitHub，构建产物保留 30 天。
+
+需要从源码运行或自行打包时：
+
 GUI 依赖（PySide6 / QFluentWidgets）不在默认安装里，要单独装：
 
 ```bash
 pip install -e ".[gui]"
 python -m shmtu_auth.main_gui
 ```
+
+在 Windows PowerShell 中自行生成 exe：
+
+```powershell
+python -m pip install pyinstaller
+powershell -ExecutionPolicy Bypass -File Build\windows_generate_exe_gui_pyinstaller.ps1
+```
+
+产物是 `Build/Output/onefile/shmtu_auth_gui.exe`，已包含 Python、GUI 依赖和 OCR 模型。
 
 没有 `pip install -e .` 的话，加一句 `PYTHONPATH=src` 再跑上面第二条命令。
 
