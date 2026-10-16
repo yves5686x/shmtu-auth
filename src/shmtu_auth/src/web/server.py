@@ -14,6 +14,8 @@ from werkzeug.security import check_password_hash, generate_password_hash
 from shmtu_auth.src.utils.account_store import save_accounts, settings_path, write_private_json
 from shmtu_auth.src.utils.program_env_config import get_user_list
 
+DEFAULT_WEB_PASSWORD = "Letsgo123!@#"
+
 
 class RuntimeState:
     def __init__(self):
@@ -34,7 +36,7 @@ def load_admin():
     path = settings_path().parent / "web-admin.json"
     if path.exists():
         return json.loads(path.read_text(encoding="utf-8"))
-    password = os.environ.get("SHMTU_AUTH_WEB_PASSWORD") or secrets.token_urlsafe(18)
+    password = os.environ.get("SHMTU_AUTH_WEB_PASSWORD") or DEFAULT_WEB_PASSWORD
     if len(password) < 12:
         raise ValueError("网页管理密码至少需要 12 个字符")
     data = {"password_hash": generate_password_hash(password), "secret": secrets.token_hex(32)}

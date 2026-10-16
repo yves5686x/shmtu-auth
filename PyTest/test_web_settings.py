@@ -121,6 +121,21 @@ def test_changing_admin_password_invalidates_old_sessions(web):
     assert "replacement-password" not in (path / "web-admin.json").read_text()
 
 
+def test_default_admin_password_only_applies_on_first_initialization(tmp_path, monkeypatch):
+    monkeypatch.setenv("SHMTU_AUTH_SETTINGS_PATH", str(tmp_path / "accounts.json"))
+    monkeypatch.delenv("SHMTU_AUTH_WEB_PASSWORD", raising=False)
+    app = create_app()
+    client = app.test_client()
+    result = client.post("/api/login", json={"password": "Letsgo123!@#"})
+    assert result.status_code == 200
+    result = client.post("/api/password", json={"current": "Letsgo123!@#", "password": "custom-management-password"},
+                         headers={"X-CSRF-Token": result.json["csrf"]})
+    assert result.status_code == 200
+    reloaded = create_app().test_client()
+    assert reloaded.post("/api/login", json={"password": "Letsgo123!@#"}).status_code == 401
+    assert reloaded.post("/api/login", json={"password": "custom-management-password"}).status_code == 200
+
+
 def test_web_monitor_waits_until_accounts_are_added_and_honors_removal(web, monkeypatch):
     state = web[1]
     class StopTest(Exception):

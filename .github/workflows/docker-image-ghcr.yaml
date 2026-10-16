@@ -80,7 +80,7 @@ jobs:
 
       - name: Verify web setup without campus accounts
         run: |
-          docker run -d --name shmtu-web-ci -e SHMTU_AUTH_WEB_PASSWORD=ci-settings-passphrase-12345 shmtu-auth:ci
+          docker run -d --name shmtu-web-ci shmtu-auth:ci
           trap 'docker logs shmtu-web-ci; docker rm -f shmtu-web-ci' EXIT
           docker exec -i shmtu-web-ci python - <<'PY'
           import http.cookiejar
@@ -99,7 +99,7 @@ jobs:
                   if attempt == 29:
                       raise
                   time.sleep(1)
-          request = urllib.request.Request(base + '/api/login', data=json.dumps({'password': 'ci-settings-passphrase-12345'}).encode(), headers={'Content-Type': 'application/json'})
+          request = urllib.request.Request(base + '/api/login', data=json.dumps({'password': 'Letsgo123!@#'}).encode(), headers={'Content-Type': 'application/json'})
           with client.open(request, timeout=5) as response:
               csrf = json.load(response)['csrf']
           with client.open(base + '/api/accounts', timeout=5) as response:

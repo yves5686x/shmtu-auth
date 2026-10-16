@@ -69,10 +69,9 @@ Docker 使用主包 CLI，与 GUI 共用认证核心，包含验证码 OCR。
 ```bash
 docker run -d --name shmtu-auth --network host --restart unless-stopped \
   -v shmtu-auth-data:/app/data ghcr.io/yves5686x/shmtu-auth:feat-portal-captcha
-docker logs shmtu-auth
 ```
 
-打开 `http://宿主机IP:18888`，用首次日志中的管理密码登录后填写学号和密码。
+打开 `http://宿主机IP:18888`，用默认管理密码 `Letsgo123!@#` 登录后填写学号和密码。
 保存后自动生效，数据卷用于保留账号和管理密码。详见 [网页设置说明](Docker/README.md)。
 
 ```bash

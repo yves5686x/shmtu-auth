@@ -11,14 +11,14 @@
 docker run -d --name shmtu-auth --network host --restart unless-stopped \
   -v shmtu-auth-data:/app/data \
   ghcr.io/yves5686x/shmtu-auth:feat-portal-captcha
-docker logs shmtu-auth
 ```
 
-首次日志会显示一次「网页初始管理密码」。打开 `http://宿主机IP:18888`，用这个管理密码
-登录，在网页填写学号与校园网密码，点击「保存并应用」。还没有账号时容器会等待设置。
+打开 `http://宿主机IP:18888`，使用默认管理密码 `Letsgo123!@#` 登录，
+在网页填写学号与校园网密码，点击「保存并应用」。还没有账号时容器会等待设置。
 保存后自动认证，不需要重启容器；网页也能查看当前状态、添加删除账号和修改管理密码。
 
-网页管理密码与校园网密码不同。已有账号的密码留空可保留；删除全部账号后暂停认证。
+网页管理密码与校园网密码不同，首次登录后可在网页修改。默认密码只用于首次初始化，
+已有数据卷中保存的管理密码不会被升级覆盖。已有账号的密码留空可保留；删除全部账号后暂停认证。
 网页配置优先于环境变量和凭据服务；需要恢复原有配置来源时，移除数据目录中的
 `accounts.json` 并重启容器。不要删除数据卷，重建容器时继续挂载同一个卷。
 
@@ -31,7 +31,7 @@ docker logs shmtu-auth
 - `SHMTU_AUTH_WEB=false`：关闭网页，恢复原 CLI 启动方式，未配置账号时退出。
 - `SHMTU_AUTH_WEB_PASSWORD`：首次初始化时指定管理密码，至少 12 个字符；已有管理配置时忽略。
 - `SHMTU_AUTH_SETTINGS_PATH`：账号文件路径，默认 `/app/data/accounts.json`。
-- 忘记管理密码：停容器后移除数据卷内 `web-admin.json`，重启会生成新管理密码，校园网账号保留。
+- 忘记管理密码：停容器后移除数据卷内 `web-admin.json`，重启会恢复默认管理密码（或首次初始化环境变量指定的密码），校园网账号保留。
 
 使用 Compose 时可直接执行 `docker compose -f docker-compose.image.yaml up -d`，
 账号在网页填写即可（需要 Compose 2.24 或更新版本，以支持可选 `.env`）。
