@@ -14,14 +14,15 @@ qfluentwidgets 的 ``ScrollArea`` 把滚轮事件交给 ``SmoothScrollDelegate``
 * ``AdaptiveSmoothScrollEngine`` —— 按 ``QElapsedTimer`` 的真实耗时推进，
   时长恒定：帧晚了这一帧就少走一点，但整段动画不会被拉长。
 
-所以项目里的滚动区域统一用 ``PerfScrollArea``（下面这个子类），
-它只是把引擎选择改成后者。做法是把 ``SmoothScroll.widthThreshold`` 设成 0 ——
-这是库内部**用来挑选引擎的宽度门槛**，设成 0 就等于永远满足条件，
-走的是它自己的分支逻辑，不需要碰任何私有方法。
-
-依赖内部属性名将来若变了，这里静默跳过并退回原行为，不会把界面弄崩。
+优化策略：
+1. 触控板（Mac Trackpad / Windows Precision Touchpad，pixelDelta 非空）：
+   绕过 60Hz 软件定时器插值，直接调用 Qt 原生物理滚轮事件，发挥 120Hz 高刷屏原生丝滑度！
+2. 鼠标滚轮：
+   兼容 qfluentwidgets 不同版本的属性拼写（scrollDelegate / scrollDelagate），
+   将门槛设为 0 强制启用自适应时间引擎，并缩短过渡动画时长（150ms 左右），紧凑跟手。
 """
 
+from PySide6.QtWidgets import QScrollArea
 from qfluentwidgets import ScrollArea
 
 from shmtu_auth.src.utils.logs import get_logger
@@ -32,15 +33,14 @@ logger = get_logger()
 def _iter_smooth_scrolls(scroll_area):
     """把一个滚动区域里所有的 ``SmoothScroll`` 实例找出来。
 
-    两种容器各有各的挂法：
-
-    * ``ScrollArea`` → ``scrollDelagate.verticalSmoothScroll`` / ``horizonSmoothScroll``
-      （注意属性名 ``scrollDelagate`` 就是这么拼的，不是笔误）
+    兼容两种容器与不同版本的属性名拼写：
+    * ``ScrollArea`` → ``scrollDelegate`` (新版) 或 ``scrollDelagate`` (旧版 typo)
+      内部的 ``verticalSmoothScroll`` / ``horizonSmoothScroll``
     * ``SingleDirectionScrollArea`` → ``smoothScroll``
     """
     found = []
 
-    delegate = getattr(scroll_area, "scrollDelagate", None)
+    delegate = getattr(scroll_area, "scrollDelegate", None) or getattr(scroll_area, "scrollDelagate", None)
     if delegate is not None:
         for name in ("verticalSmoothScroll", "horizonSmoothScroll"):
             item = getattr(delegate, name, None)
@@ -55,9 +55,9 @@ def _iter_smooth_scrolls(scroll_area):
 
 
 def prefer_time_based_smooth_scroll(scroll_area) -> None:
-    """让这个滚动区域的平滑滚动按「实际时间」推进，而不是按帧数推进。"""
+    """让这个滚动区域的平滑滚动按「实际时间」推进，并消除过长动画带来的滞后感。"""
     for smooth_scroll in _iter_smooth_scrolls(scroll_area):
-        # 门槛设 0 ⇒ 永远走按时间推进的那个引擎
+        # 门槛设 0 ⇒ 永远走按时间推进的那个引擎，不受屏幕分辨率门槛限制
         try:
             smooth_scroll.widthThreshold = 0
         except Exception as e:  # noqa: BLE001
@@ -71,14 +71,41 @@ def prefer_time_based_smooth_scroll(scroll_area) -> None:
             except Exception as e:  # noqa: BLE001
                 logger.debug(f"开启平滑滚动动态引擎失败（忽略）: {e}")
 
+        # 调优内部引擎动画时长与队列，消除默认 400ms 动画带来的粘手滞后感
+        for engine_attr in ("adaptiveEngine", "engine", "fixedStepEngine"):
+            engine = getattr(smooth_scroll, engine_attr, None)
+            if engine is not None:
+                if hasattr(engine, "minDuration"):
+                    try:
+                        engine.minDuration = 150
+                    except Exception:
+                        pass
+                if hasattr(engine, "maxQueueSize"):
+                    try:
+                        engine.maxQueueSize = 5
+                    except Exception:
+                        pass
+
 
 class PerfScrollArea(ScrollArea):
-    """``ScrollArea`` + 按时间推进的平滑滚动。
+    """优化后的平滑滚动区域。
 
-    项目里所有页面级滚动区域都应该继承它，别再直接继承 ``ScrollArea`` ——
-    否则就会掉回「按帧数推进」的引擎，帧一慢整段滚动就被拉长。
+    1. 触控板直接走系统原生物理滚动（120Hz 高刷平滑，零延迟不卡顿）；
+    2. 传统鼠标滚轮启用时间自适应引擎，并压缩过渡延迟，紧凑跟手；
+    3. 修复了 qfluentwidgets 新版本由于属性名更新导致平滑调优未生效的问题。
     """
 
     def __init__(self, parent=None):
         super().__init__(parent=parent)
         prefer_time_based_smooth_scroll(self)
+
+    def wheelEvent(self, e):
+        # 高精度触控板（Mac Trackpad / Windows Precision Touchpad，pixelDelta 非空）
+        # 操作系统层面已经有高刷硬件级惯性平滑动画。
+        # 此时绕过软件 SmoothScroll 伪平滑，直接调用 QScrollArea 原生滚轮处理，
+        # 彻底消除拖手感、果冻感和掉帧感，发挥 120Hz ProMotion / 高刷屏丝滑度！
+        if not e.pixelDelta().isNull():
+            QScrollArea.wheelEvent(self, e)
+            return
+
+        super().wheelEvent(e)
