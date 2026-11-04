@@ -7,15 +7,25 @@ import requests
 github_author_name = "a645162"
 github_repo_name = "shmtu-auth"
 
+DEFAULT_BRANCHES = ["main", "beta", "dev"]
 
-def get_github_branches() -> list[str]:
-    """获取GitHub仓库的分支列表，排除gh-pages分支"""
+
+def get_github_branches(fetch_online: bool = False, timeout: float = 3.0) -> list[str]:
+    """获取GitHub仓库的分支列表，排除gh-pages分支。
+
+    默认完全离线（fetch_online=False），直接返回预设分支列表 ['main', 'beta', 'dev']，
+    避免在主 UI 线程或启动阶段发起实时网络请求导致程序卡顿。
+    仅当明确指定 fetch_online=True 时才联网获取，并带有超时限制。
+    """
+    if not fetch_online:
+        return DEFAULT_BRANCHES.copy()
+
     url = f"https://api.github.com/repos/{github_author_name}/{github_repo_name}/branches"
 
     try:
-        response = requests.get(url)
+        response = requests.get(url, timeout=timeout)
         if response.status_code != 200:
-            return ["main"]  # 如果API请求失败，返回默认分支
+            return DEFAULT_BRANCHES.copy()
 
         branches_data = response.json()
         branches = []
@@ -30,7 +40,7 @@ def get_github_branches() -> list[str]:
         if "main" not in branches and len(branches) > 0:
             branches.insert(0, "main")
         elif len(branches) == 0:
-            branches = ["main"]
+            branches = DEFAULT_BRANCHES.copy()
 
         # 将main分支排到第一位
         if "main" in branches:
@@ -39,16 +49,16 @@ def get_github_branches() -> list[str]:
 
         return branches
     except Exception:
-        return ["main"]  # 异常情况下返回默认分支
+        return DEFAULT_BRANCHES.copy()
 
 
-def get_branch_version(branch: str = "main") -> str:
+def get_branch_version(branch: str = "main", timeout: float = 3.0) -> str:
     url = f"https://raw.githubusercontent.com/{github_author_name}/{github_repo_name}"
     url += f"/refs/heads/{branch}/"
     url += "src/shmtu_auth/version.py"
 
     try:
-        response = requests.get(url)
+        response = requests.get(url, timeout=timeout)
         content = response.text.strip()
         if len(content) == 0:
             return ""

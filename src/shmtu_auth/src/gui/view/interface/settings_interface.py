@@ -1,4 +1,4 @@
-from PySide6.QtCore import Qt, QUrl
+from PySide6.QtCore import QThread, Qt, QUrl, Signal
 from PySide6.QtGui import QDesktopServices
 from PySide6.QtWidgets import QApplication, QLabel, QWidget
 from qfluentwidgets import (
@@ -33,6 +33,18 @@ from shmtu_auth.src.gui.task.check_update import start_check_update_once_thread
 from shmtu_auth.src.utils.logs import get_logger
 
 logger = get_logger()
+
+
+class AsyncUpdateChecker(QThread):
+    check_finished = Signal(dict)
+
+    def __init__(self, branch: str, parent=None):
+        super().__init__(parent)
+        self.branch = branch
+
+    def run(self):
+        result = check_update_manually(self.branch)
+        self.check_finished.emit(result)
 
 
 class SettingInterface(PerfScrollArea):
@@ -321,7 +333,11 @@ class SettingInterface(PerfScrollArea):
             self.update_branch_card.comboBox.addItems(default_branches)
 
     def __manual_check_update(self):
-        """手动检查更新"""
+        """手动检查更新（后台异步执行，不阻塞 UI 线程）"""
+        if hasattr(self, "_update_checker") and self._update_checker and self._update_checker.isRunning():
+            logger.warning("更新检查已在进行中，跳过重复请求")
+            return
+
         logger.info("用户点击手动检查更新按钮")
 
         # 获取当前选择的分支
@@ -333,19 +349,21 @@ class SettingInterface(PerfScrollArea):
         # 使用下拉框当前显示的分支
         selected_branch = current_combobox_text if current_combobox_text else current_selected_branch
 
-        # 显示检查中的提示
+        self.manual_check_update_card.setEnabled(False)
         InfoBar.info("检查更新", f"正在检查 {selected_branch} 分支的更新，请稍候...", duration=2000, parent=self)
 
-        try:
-            logger.info(f"开始执行手动更新检查，使用分支: {selected_branch}")
-            # 执行更新检查，传递当前选择的分支
-            result = check_update_manually(selected_branch)
+        self._update_checker = AsyncUpdateChecker(selected_branch, self)
+        self._update_checker.check_finished.connect(self.__on_manual_check_finished)
+        self._update_checker.start()
 
+    def __on_manual_check_finished(self, result: dict):
+        self.manual_check_update_card.setEnabled(True)
+        try:
             logger.info(f"更新检查结果: {result}")
 
-            if not result["success"]:
+            if not result.get("success", False):
                 # 检查失败
-                error_msg = result["error_message"]
+                error_msg = result.get("error_message", "检查更新失败")
                 logger.error(f"更新检查失败: {error_msg}")
                 InfoBar.error("检查更新失败", error_msg, duration=4000, parent=self)
                 return
@@ -362,26 +380,21 @@ class SettingInterface(PerfScrollArea):
             )
 
             if has_update:
-                # 有新版本
                 success_msg = f"当前版本: {current_version}\n最新版本: {latest_version}\n分支: {selected_branch}"
                 InfoBar.success("发现新版本", success_msg, duration=5000, parent=self)
                 logger.info(f"New version available: {latest_version} (current: {current_version})")
             elif is_ahead:
-                # 当前版本超前
                 success_msg = f"当前版本: {current_version}\n远端版本: {latest_version}\n分支: {selected_branch}\n当前版本超前，可能不稳定，仅供测试"
                 InfoBar.warning("版本超前", success_msg, duration=5000, parent=self)
                 logger.info(f"Version ahead of remote: {current_version} > {latest_version}")
             else:
-                # 已是最新版本
                 success_msg = f"当前版本: {current_version}\n远端版本: {latest_version}\n分支: {selected_branch}\n您使用的已经是最新版本！"
                 InfoBar.success("已是最新版本", success_msg, duration=4000, parent=self)
                 logger.info(f"Already up to date: {current_version} (remote: {latest_version})")
 
         except Exception as e:
-            # 异常处理
             error_msg = f"检查更新时发生未知错误: {str(e)}"
             logger.error(f"Manual update check exception: {e}")
-            logger.error(f"Exception details: {type(e).__name__}: {str(e)}")
             InfoBar.error("检查更新失败", error_msg, duration=4000, parent=self)
 
     def __quit_application(self):

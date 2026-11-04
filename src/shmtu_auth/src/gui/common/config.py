@@ -81,7 +81,8 @@ class Config(QConfig):
     blur_radius = RangeConfigItem("Material", "AcrylicBlurRadius", 15, RangeValidator(0, 40))
 
     # software update
-    check_update_at_start_up = ConfigItem("Update", "CheckUpdateAtStartUp", True, BoolValidator())
+    # 默认关闭启动时联网检查更新，优先保证离线运行流畅、不阻塞启动
+    check_update_at_start_up = ConfigItem("Update", "CheckUpdateAtStartUp", False, BoolValidator())
     update_branch = OptionsConfigItem(
         "Update",
         "UpdateBranch",
