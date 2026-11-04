@@ -20,7 +20,6 @@ from shmtu_auth.src.gui.common.credential_bridge import (
     fetch_service_users,
     merge_service_users,
 )
-from shmtu_auth.src.gui.common.scroll_tuning import PerfScrollArea
 from shmtu_auth.src.gui.common.signal_bus import auth_status_changed, log_new, signal_bus
 from shmtu_auth.src.gui.common.style_sheet import StyleSheet
 from shmtu_auth.src.gui.feature.network_auth import AuthThread
@@ -129,7 +128,7 @@ class InternetCheckSettingCard(ExpandGroupSettingCard):
         w.setFixedHeight(60)
 
         layout = QHBoxLayout(w)
-        layout.setContentsMargins(48, 12, 48, 12)
+        layout.setContentsMargins(24, 12, 24, 12)
 
         layout.addWidget(label)
         layout.addStretch(1)
@@ -139,20 +138,19 @@ class InternetCheckSettingCard(ExpandGroupSettingCard):
         self.addGroupWidget(w)
 
 
-class AuthSettingWidget(PerfScrollArea):
+class AuthSettingWidget(QWidget):
     def __init__(self, parent=None):
         super().__init__(parent=parent)
-        self.scroll_widget = QWidget()
-        self.expand_layout = ExpandLayout(self.scroll_widget)
+        self.expand_layout = ExpandLayout(self)
         self.expand_layout.setSpacing(28)
-        self.expand_layout.setContentsMargins(36, 10, 36, 0)
+        self.expand_layout.setContentsMargins(0, 0, 0, 0)
 
         # 状态显示组
-        self.status_group = AuthStatusCard(self.scroll_widget)
+        self.status_group = AuthStatusCard(self)
         self.expand_layout.addWidget(self.status_group)
 
         # shmtu-auth 控制组
-        self.auth_group_general = SettingCardGroup("认证控制", self.scroll_widget)
+        self.auth_group_general = SettingCardGroup("认证控制", self)
 
         self.start_card = PrimaryPushSettingCard(text="启动", icon=FIF.HELP, title="运行状态", content="启动或关闭服务")
 
@@ -186,19 +184,6 @@ class AuthSettingWidget(PerfScrollArea):
         self.auth_group_general.addSettingCard(self.reset_stats_card)
 
         self.expand_layout.addWidget(self.auth_group_general)
-
-        self.__init_widget()
-
-    def __init_widget(self):
-        self.setHorizontalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
-        self.setViewportMargins(0, 0, 0, 0)
-        self.setWidget(self.scroll_widget)
-        self.setWidgetResizable(True)
-        self.setObjectName("settingInterface")
-
-        # initialize style sheet
-        self.scroll_widget.setObjectName("scrollWidget")
-        StyleSheet.SETTING_INTERFACE.apply(self)
 
     def __show_restart_tooltip(self):
         """show restart tooltip"""

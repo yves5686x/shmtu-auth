@@ -283,7 +283,7 @@ class SettingInterface(PerfScrollArea):
 
         # add setting card group to layout
         self.expandLayout.setSpacing(28)
-        self.expandLayout.setContentsMargins(36, 10, 36, 0)
+        self.expandLayout.setContentsMargins(36, 10, 36, 36)
         self.expandLayout.addWidget(self.shmtu_auth_group)
         self.expandLayout.addWidget(self.general_group)
         self.expandLayout.addWidget(self.tray_group)

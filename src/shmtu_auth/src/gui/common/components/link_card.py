@@ -54,7 +54,7 @@ class LinkCardView(SingleDirectionScrollArea):
         self.view = QWidget(self)
         self.hBoxLayout = QHBoxLayout(self.view)
 
-        self.hBoxLayout.setContentsMargins(36, 0, 0, 0)
+        self.hBoxLayout.setContentsMargins(36, 0, 36, 0)
         self.hBoxLayout.setSpacing(12)
         self.hBoxLayout.setAlignment(Qt.AlignmentFlag.AlignLeft)
 

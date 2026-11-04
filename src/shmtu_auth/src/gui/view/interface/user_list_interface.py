@@ -75,7 +75,9 @@ class UserListInterface(GalleryInterface):
 
     def __init_widget(self):
         user_info_widget = QWidget(self)
-        user_info_layout = QHBoxLayout()
+        user_info_layout = QHBoxLayout(user_info_widget)
+        user_info_layout.setContentsMargins(0, 0, 0, 0)
+        user_info_layout.setSpacing(16)
 
         # 表格
         self.table_widget = UserListTableWidget(self, user_list=self.user_list)
@@ -90,7 +92,6 @@ class UserListInterface(GalleryInterface):
         )
         user_info_layout.addWidget(self.user_info_edit_widget)
 
-        user_info_widget.setLayout(user_info_layout)
         self.vBoxLayout.addWidget(user_info_widget)
 
         button_generate_docker_config = FPushButton(self, "为服务器生成Docker配置")

@@ -44,6 +44,7 @@ class BannerWidget(QWidget):
         self.galleryLabel = QLabel("ShangHai Maritime University", self)
         self.galleryLabel.setFont(font_confg.title_font)
         self.galleryLabel.setObjectName("galleryLabel")
+        self.galleryLabel.setStyleSheet("padding-left: 36px;")
 
         self.banner: QPixmap = self.__load_banner()
         self.linkCardView = LinkCardView(self)
@@ -266,7 +267,7 @@ class HomeInterface(PerfScrollArea):
 
         status_container = QWidget(self.view)
         status_layout = QHBoxLayout(status_container)
-        status_layout.setContentsMargins(20, 0, 20, 0)  # 左右各20px边距
+        status_layout.setContentsMargins(36, 0, 36, 0)  # 左右统一 36px 边距
 
         self.status_card = QuickStatusCard(self.view)
         status_layout.addWidget(self.status_card)
